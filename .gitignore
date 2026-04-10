@@ -37,5 +37,5 @@ mkcert.exe
 .vscode/
 .idea/
 
-# Claude Code
-CLAUDE.md
+# Claude Code (descomente para não subir ao GitHub)
+# CLAUDE.md
