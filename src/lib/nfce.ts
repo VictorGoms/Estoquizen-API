@@ -7,6 +7,21 @@ export interface NfceItem {
   valor_total:    number;
 }
 
+/* ── Cache em memória — NFC-e é imutável, cache de 24h ── */
+const CACHE_TTL = 24 * 60 * 60 * 1000; // 24h em ms
+const cache = new Map<string, { itens: NfceItem[]; expiresAt: number }>();
+
+function cacheGet(chave: string): NfceItem[] | null {
+  const entry = cache.get(chave);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) { cache.delete(chave); return null; }
+  return entry.itens;
+}
+
+function cacheSet(chave: string, itens: NfceItem[]) {
+  cache.set(chave, { itens, expiresAt: Date.now() + CACHE_TTL });
+}
+
 /* ── URLs por estado — versão 3 (padrão NFC-e atual) ── */
 const PORTAIS: Record<string, (chave: string) => string[]> = {
   "35": (k) => [
@@ -60,7 +75,31 @@ function parseItens(html: string): NfceItem[] {
   return itens;
 }
 
+async function fetchItens(url: string): Promise<NfceItem[]> {
+  const res = await fetch(url, {
+    headers: FETCH_HEADERS,
+    redirect: "follow",
+    signal:   AbortSignal.timeout(5_000),
+  });
+
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+  const html  = await res.text();
+  const itens = parseItens(html);
+
+  if (itens.length === 0) {
+    console.warn("[NFC-e] Nenhum item parseado. Trecho do HTML:\n" + html.slice(0, 800));
+    throw new Error("HTML sem itens");
+  }
+
+  return itens;
+}
+
 export async function consultarNfce(chave: string): Promise<NfceItem[]> {
+  /* Cache hit — retorna instantâneo */
+  const cached = cacheGet(chave);
+  if (cached) return cached;
+
   const estadoCod = chave.slice(0, 2);
   const buildUrls = PORTAIS[estadoCod];
 
@@ -70,41 +109,21 @@ export async function consultarNfce(chave: string): Promise<NfceItem[]> {
   }
 
   const urls = buildUrls(chave);
-  let lastError = "";
 
-  for (const url of urls) {
-    try {
-      const res = await fetch(url, {
-        headers: FETCH_HEADERS,
-        redirect: "follow",
-        signal:   AbortSignal.timeout(15_000),
-      });
+  /* Dispara todas as URLs em paralelo — vence a primeira que responder */
+  try {
+    const itens = await Promise.any(urls.map((url) => fetchItens(url)));
+    cacheSet(chave, itens);
+    return itens;
+  } catch (err) {
+    /* AggregateError quando todas falharam */
+    const detail = err instanceof AggregateError
+      ? err.errors.map((e: Error) => e.message).join(" | ")
+      : err instanceof Error ? err.message : String(err);
 
-      if (!res.ok) {
-        lastError = `HTTP ${res.status}`;
-        continue;
-      }
-
-      const html  = await res.text();
-      const itens = parseItens(html);
-
-      /* Debug: mostra trecho do HTML caso não encontre itens */
-      if (itens.length === 0) {
-        console.warn("[NFC-e] Nenhum item parseado. Trecho do HTML:\n" + html.slice(0, 800));
-        lastError = "HTML sem itens";
-        continue;
-      }
-
-      return itens;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[NFC-e] Falha em ${url}: ${msg}`);
-      lastError = msg;
-    }
+    throw new Error(
+      `Não foi possível consultar a NFC-e. ${detail}. ` +
+      `Verifique se a chave está correta e se o portal SEFAZ está disponível.`
+    );
   }
-
-  throw new Error(
-    `Não foi possível consultar a NFC-e. ${lastError}. ` +
-    `Verifique se a chave está correta e se o portal SEFAZ está disponível.`
-  );
 }
