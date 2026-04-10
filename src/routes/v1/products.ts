@@ -1,0 +1,179 @@
+import type { FastifyPluginAsync } from "fastify";
+import { CreateProductSchema, UpdateProductSchema, AdjustQtySchema } from "../../schemas/product.schema.js";
+import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
+import { ok, fail, dbError } from "../../lib/response.js";
+import { getLimits } from "../../lib/plans.js";
+
+const productsRoutes: FastifyPluginAsync = async (fastify) => {
+  const auth      = { preHandler: [fastify.authenticate] };
+  const authWrite = { preHandler: [fastify.authenticate], config: { rateLimit: { max: 60, timeWindow: "1 minute" } } };
+
+  /* GET /products?workspace_id=xxx */
+  fastify.get("/products", auth, async (req, reply) => {
+    const { workspace_id } = req.query as { workspace_id?: string };
+    if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
+
+    const token = req.headers.authorization!.slice(7);
+    const db    = supabaseForUser(token);
+
+    const { data, error } = await db
+      .from("products")
+      .select("id, workspace_id, name, code, unit, price, qty, min_qty, max_qty, location, supplier, image_url, nota_fiscal, created_at, updated_at")
+      .eq("workspace_id", workspace_id)
+      .order("name");
+
+    if (error) return reply.status(500).send(fail(dbError(error)));
+    return reply.send(ok(data));
+  });
+
+  /* GET /products/:id */
+  fastify.get("/products/:id", auth, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const token  = req.headers.authorization!.slice(7);
+    const db     = supabaseForUser(token);
+
+    const { data, error } = await db
+      .from("products")
+      .select("id, workspace_id, name, code, unit, price, qty, min_qty, max_qty, location, supplier, image_url, nota_fiscal, created_at, updated_at")
+      .eq("id", id)
+      .single();
+
+    if (error) return reply.status(404).send(fail("Produto não encontrado"));
+    return reply.send(ok(data));
+  });
+
+  /* POST /products */
+  fastify.post("/products", authWrite, async (req, reply) => {
+    const parsed = CreateProductSchema.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
+
+    const token = req.headers.authorization!.slice(7);
+    const db    = supabaseForUser(token);
+
+    /* ── Validação de limite do plano ── */
+    const { data: ws } = await supabaseAdmin
+      .from("workspaces")
+      .select("plan")
+      .eq("id", parsed.data.workspace_id)
+      .single();
+
+    const limits = getLimits(ws?.plan ?? "basic");
+
+    const { count } = await supabaseAdmin
+      .from("products")
+      .select("id", { count: "exact", head: true })
+      .eq("workspace_id", parsed.data.workspace_id);
+
+    if ((count ?? 0) >= limits.products) {
+      return reply.status(403).send(fail(
+        `Limite do plano ${limits.label} atingido: máximo de ${limits.products} produtos. Faça upgrade para continuar.`
+      ));
+    }
+
+    const initialQty = parsed.data.qty ?? 0;
+
+    /* code é optional no schema mas NOT NULL no banco — gera um código único quando não informado */
+    const code = parsed.data.code ?? `AUTO-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+
+    const { data, error } = await db
+      .from("products")
+      .insert({ ...parsed.data, code, qty: 0, created_by: req.user.id })
+      .select()
+      .single();
+
+    if (error) return reply.status(500).send(fail(dbError(error)));
+
+    /* Se houver estoque inicial, registra como primeira movimentação */
+    if (initialQty > 0) {
+      await db.rpc("adjust_product_qty", {
+        p_product_id: data.id,
+        p_delta:      initialQty,
+        p_reason:     "Estoque inicial",
+        p_user_id:    req.user.id,
+      });
+    }
+
+    return reply.status(201).send(ok({ ...data, qty: initialQty }));
+  });
+
+  /* PATCH /products/:id */
+  fastify.patch("/products/:id", authWrite, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = UpdateProductSchema.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
+
+    const token = req.headers.authorization!.slice(7);
+    const db    = supabaseForUser(token);
+
+    const { data, error } = await db
+      .from("products")
+      .update({ ...parsed.data, updated_at: new Date().toISOString() })
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) return reply.status(500).send(fail(dbError(error)));
+    return reply.send(ok(data));
+  });
+
+  /* POST /products/:id/adjust — entrada ou saída de estoque */
+  fastify.post("/products/:id/adjust", authWrite, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = AdjustQtySchema.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
+
+    const token = req.headers.authorization!.slice(7);
+    const db    = supabaseForUser(token);
+
+    /* Ajuste atômico via RPC — sem race condition, sem divergência */
+    const { data, error } = await db.rpc("adjust_product_qty", {
+      p_product_id: id,
+      p_delta:      parsed.data.delta,
+      p_reason:     parsed.data.reason ?? null,
+      p_user_id:    req.user.id,
+    });
+
+    if (error) {
+      const isNotFound = error.message.includes("não encontrado") || error.message.includes("insuficiente");
+      return reply.status(isNotFound ? 400 : 500).send(fail(dbError(error)));
+    }
+    return reply.send(ok(data));
+  });
+
+  /* GET /products/:id/movements?since=<iso>&limit=<n> */
+  fastify.get("/products/:id/movements", auth, async (req, reply) => {
+    const { id }            = req.params as { id: string };
+    const { since, limit }  = req.query  as { since?: string; limit?: string };
+
+    const token = req.headers.authorization!.slice(7);
+    const db    = supabaseForUser(token);
+
+    const cap = Math.min(parseInt(limit ?? "200", 10), 500);
+
+    let query = db
+      .from("movements")
+      .select("id, delta, reason, created_at")
+      .eq("product_id", id)
+      .order("created_at", { ascending: false })
+      .limit(cap);
+
+    if (since) query = query.gte("created_at", since);
+
+    const { data, error } = await query;
+    if (error) return reply.status(500).send(fail(dbError(error)));
+    return reply.send(ok(data));
+  });
+
+  /* DELETE /products/:id */
+  fastify.delete("/products/:id", authWrite, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const token  = req.headers.authorization!.slice(7);
+    const db     = supabaseForUser(token);
+
+    const { error } = await db.from("products").delete().eq("id", id);
+    if (error) return reply.status(500).send(fail(dbError(error)));
+    return reply.send(ok(null));
+  });
+};
+
+export default productsRoutes;

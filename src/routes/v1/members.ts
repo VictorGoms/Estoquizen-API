@@ -1,0 +1,160 @@
+import type { FastifyPluginAsync } from "fastify";
+import { InviteMemberSchema, UpdateMemberSchema } from "../../schemas/member.schema.js";
+import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
+import { ok, fail, dbError } from "../../lib/response.js";
+import { getLimits } from "../../lib/plans.js";
+
+const membersRoutes: FastifyPluginAsync = async (fastify) => {
+  const auth       = { preHandler: [fastify.authenticate] };
+  const authWrite  = { preHandler: [fastify.authenticate], config: { rateLimit: { max: 60, timeWindow: "1 minute" } } };
+  const authStrict = { preHandler: [fastify.authenticate], config: { rateLimit: { max: 10, timeWindow: "1 minute" } } };
+
+  /* GET /members?workspace_id=xxx */
+  fastify.get("/members", auth, async (req, reply) => {
+    const { workspace_id } = req.query as { workspace_id?: string };
+    if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
+
+    const token = req.headers.authorization!.slice(7);
+    const db    = supabaseForUser(token);
+
+    const { data, error } = await db
+      .from("workspace_members")
+      .select("*, profiles(id, name, email, phone, avatar_color)")
+      .eq("workspace_id", workspace_id)
+      .order("created_at");
+
+    if (error) return reply.status(500).send(fail(dbError(error)));
+    return reply.send(ok(data));
+  });
+
+  /* POST /members/invite */
+  fastify.post("/members/invite", authStrict, async (req, reply) => {
+    const parsed = InviteMemberSchema.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
+
+    const { email: rawEmail, name, role, workspace_id } = parsed.data;
+    const email = rawEmail.toLowerCase().trim();
+
+    /* ── Validação de limite do plano ── */
+    const { data: ws } = await supabaseAdmin
+      .from("workspaces")
+      .select("plan")
+      .eq("id", workspace_id)
+      .single();
+
+    const limits = getLimits(ws?.plan ?? "basic");
+
+    const { count } = await supabaseAdmin
+      .from("workspace_members")
+      .select("id", { count: "exact", head: true })
+      .eq("workspace_id", workspace_id)
+      .eq("status", "ativo");
+
+    if ((count ?? 0) >= limits.members) {
+      return reply.status(403).send(fail(
+        `Limite do plano ${limits.label} atingido: máximo de ${limits.members} membros. Faça upgrade para continuar.`
+      ));
+    }
+
+    /* Verifica se o usuário já tem conta pelo email (case-insensitive) */
+    const { data: existingProfile } = await supabaseAdmin
+      .from("profiles")
+      .select("id")
+      .ilike("email", email)
+      .maybeSingle();
+
+    let userId: string;
+
+    if (existingProfile) {
+      /* Usuário já tem conta — apenas adiciona ao workspace */
+      userId = existingProfile.id;
+    } else {
+      /* Usuário novo — cria conta e envia email de convite */
+      const { data: invite, error: inviteErr } = await supabaseAdmin.auth.admin.inviteUserByEmail(
+        email,
+        { data: { name, workspace_id, role } },
+      );
+      if (inviteErr) return reply.status(500).send(fail(dbError(inviteErr)));
+      userId = invite.user.id;
+    }
+
+    /* Garante que não há convite duplicado para o mesmo workspace */
+    const { data: already } = await supabaseAdmin
+      .from("workspace_members")
+      .select("id, status")
+      .eq("workspace_id", workspace_id)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (already) {
+      const msg = already.status === "ativo"
+        ? "Este usuário já é membro ativo do workspace."
+        : "Este usuário já possui um convite pendente.";
+      return reply.status(409).send(fail(msg));
+    }
+
+    /* Insere com status pendente */
+    const { error: memberErr } = await supabaseAdmin
+      .from("workspace_members")
+      .insert({
+        workspace_id,
+        user_id:    userId,
+        role,
+        status:     "pendente",
+        invited_by: req.user.id,
+      });
+
+    if (memberErr) return reply.status(500).send(fail(dbError(memberErr)));
+
+    const msg = existingProfile
+      ? `${email} foi adicionado ao workspace e verá o convite ao fazer login.`
+      : `Convite enviado para ${email}.`;
+    return reply.status(201).send(ok({ message: msg }));
+  });
+
+  /* PATCH /members/:id */
+  fastify.patch("/members/:id", authWrite, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = UpdateMemberSchema.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
+
+    const token = req.headers.authorization!.slice(7);
+    const db    = supabaseForUser(token);
+
+    const { name, phone, ...memberFields } = parsed.data;
+
+    /* Atualiza campos do perfil se enviados */
+    if (name !== undefined || phone !== undefined) {
+      await db.from("profiles")
+        .update({ ...(name ? { name } : {}), ...(phone !== undefined ? { phone } : {}) })
+        .eq("id", id);
+    }
+
+    /* Atualiza role/status na tabela de membros */
+    if (Object.keys(memberFields).length > 0) {
+      await db.from("workspace_members").update(memberFields).eq("user_id", id);
+    }
+    return reply.send(ok({ message: "Membro atualizado" }));
+  });
+
+  /* DELETE /members/:id — remove do workspace */
+  fastify.delete("/members/:id", authWrite, async (req, reply) => {
+    const { id }          = req.params as { id: string };
+    const { workspace_id } = req.query as { workspace_id?: string };
+    if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
+
+    const token = req.headers.authorization!.slice(7);
+    const db    = supabaseForUser(token);
+
+    const { error } = await db
+      .from("workspace_members")
+      .delete()
+      .eq("user_id", id)
+      .eq("workspace_id", workspace_id);
+
+    if (error) return reply.status(500).send(fail(dbError(error)));
+    return reply.status(204).send();
+  });
+};
+
+export default membersRoutes;

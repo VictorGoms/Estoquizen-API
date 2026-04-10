@@ -1,0 +1,41 @@
+# Dependências
+node_modules/
+
+# Build
+dist/
+build/
+
+# Variáveis de ambiente — NUNCA subir ao git
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# TypeScript
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Certificados SSL locais (mkcert)
+certs/
+certificates/
+*.pem
+*.key
+*.crt
+mkcert.exe
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code
+CLAUDE.md
