@@ -13,7 +13,7 @@ SaaS de gestão de estoque multi-tenant. O backend é uma API REST que serve o f
 
 ## Portas
 - API: `http://localhost:3001`
-- Frontend: `http://localhost:3000` (pasta `../TesteFrontSaas`)
+- Frontend: `http://localhost:3000` (pasta `../estoquizen-frontend`)
 - Docs: `http://localhost:3001/docs`
 
 ## Estrutura de pastas
@@ -131,7 +131,7 @@ SUPABASE_SERVICE_ROLE_KEY=sua_service_role_key_aqui   # NUNCA expor no frontend
 ALLOWED_ORIGINS=http://localhost:3000
 ```
 
-## Frontend (../TesteFrontSaas)
+## Frontend (../estoquizen-frontend)
 - Next.js App Router + TypeScript
 - Usa proxy rewrite (`/api/v1/:path*` → `http://localhost:3001/api/v1/:path*`) para evitar mixed-content e CORS
 - `.env.local` do frontend tem `NEXT_PUBLIC_API_URL=/api/v1` (relativo)
