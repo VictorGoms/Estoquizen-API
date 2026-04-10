@@ -145,3 +145,162 @@ ALLOWED_ORIGINS=http://localhost:3000
 - **code auto-gerado**: produtos sem código (vindos de NFC-e) recebem `AUTO-XXXXXXXX` para satisfazer NOT NULL
 - **Estoque atômico**: ajuste via RPC Postgres evita race condition em ambientes com múltiplos usuários simultâneos
 - **Stats via join**: movements não tem workspace_id; join com products (`products!inner(workspace_id)`) é necessário para contar movimentações por workspace
+
+---
+
+## Sistema de Assinaturas — Decisões de Arquitetura (a implementar)
+
+> Esta seção documenta todas as decisões tomadas em debate. Nada foi implementado ainda.
+
+### Plataforma
+- **Stripe** (não AbacatePay)
+- Usar **modo test** do Stripe durante desenvolvimento — cartões de teste não cobram nada
+- Stripe CLI para receber webhooks localmente: `stripe listen --forward-to localhost:3001/webhooks/stripe`
+
+### Modelo de cobrança
+- **Por workspace** (não por usuário) — 1 workspace = 1 assinatura = 1 Stripe Customer
+- Se o usuário tiver múltiplos workspaces, cada um tem sua própria assinatura independente
+
+### Nomes dos planos (BREAKING CHANGE em relação ao código atual)
+| Slug no banco | Label | Preço | Produtos | Membros |
+|---|---|---|---|---|
+| `basic` | Basic | R$39/mês | 150 | 3 |
+| `growth` | Growth | R$69/mês | 500 | 7 |
+| `pro` | Pro | R$129/mês | 2000 | 12 |
+
+**ATENÇÃO**: o slug `intermediate` que existe hoje no banco e em `plans.ts` deve ser renomeado para `growth` em toda a codebase. Isso inclui:
+- `database/schema.sql` — check constraint na tabela `workspaces`
+- `src/lib/plans.ts` — chave do objeto `PLAN_LIMITS`
+- Supabase Dashboard — alterar o check constraint via migration SQL
+
+### Modelo de trial (sem cartão upfront)
+- Usuário escolhe plano → cria workspace → **trial começa sem pedir cartão**
+- O Stripe **não é criado ainda** durante o trial — a assinatura é puramente local no banco
+- O Stripe só entra quando o usuário decide pagar
+
+**Duração do trial:**
+- Workspaces criados até **2026-06-30**: 30 dias (early users)
+- Workspaces criados após **2026-06-30**: 14 dias
+- Lógica: `const trialDays = workspace.created_at < new Date("2026-06-30") ? 30 : 14`
+
+### Timeline após expiração do trial
+```
+Dia 0          → workspace criado, status = "trialing"
+Dia 14 (ou 30) → trial expira → status = "trial_expired"
+               → email enviado: "seu acesso foi limitado, adicione um cartão"
+               → usuário pode VER dados mas NÃO pode criar/editar
+               → botão "exportar CSV" disponível (evita reclamação de dado perdido)
+Dia 28 (ou 44) → +14 dias sem pagar → email de aviso final
+               → "seu workspace será deletado em 16 dias"
+Dia 44 (ou 60) → +30 dias sem pagar → workspace deletado por job agendado
+```
+
+### Status da assinatura (campo `subscriptions.status`)
+| Status | Significado | Acesso |
+|---|---|---|
+| `trialing` | Trial ativo | Total |
+| `trial_expired` | Trial acabou, sem pagamento | Só leitura + exportação |
+| `active` | Pagando, assinatura ativa | Total |
+| `past_due` | Pagamento falhou, Stripe ainda tentando | Total (Stripe retenta ~7 dias) |
+| `canceled` | Cancelou ou Stripe desistiu | Só leitura + exportação |
+| `deleted` | Marcado para deleção (job ainda não rodou) | Bloqueado |
+
+### Tabela `subscriptions` (nova — adicionar ao schema)
+```sql
+create table if not exists public.subscriptions (
+  id                     uuid primary key default uuid_generate_v4(),
+  workspace_id           uuid not null references public.workspaces(id) on delete cascade,
+  plan                   text not null check (plan in ('basic', 'growth', 'pro')),
+  status                 text not null default 'trialing'
+                           check (status in ('trialing','trial_expired','active','past_due','canceled','deleted')),
+  trial_ends_at          timestamptz,
+  current_period_end     timestamptz,
+  cancel_at_period_end   boolean not null default false,
+  stripe_customer_id     text,
+  stripe_subscription_id text,
+  stripe_price_id        text,
+  created_at             timestamptz default now(),
+  updated_at             timestamptz default now(),
+  unique (workspace_id)   -- 1 assinatura por workspace
+);
+```
+
+### Sincronização `subscriptions` ↔ `workspaces.plan`
+- `workspaces.plan` é mantido como **cache** da assinatura ativa
+- O código existente que lê `workspaces.plan` para checar limites **não precisa mudar**
+- Quando o webhook do Stripe atualiza `subscriptions`, ele também atualiza `workspaces.plan` na mesma operação
+
+### Stripe metadata (obrigatório ao criar Customer e Subscription)
+Sempre passar nos dois objetos do Stripe:
+```typescript
+metadata: {
+  workspace_id: "uuid-do-workspace",
+  plan: "growth"  // ou basic | pro
+}
+```
+Isso permite identificar o workspace diretamente no payload do webhook, sem query extra.
+
+Também configurar nos Products/Prices do Stripe Dashboard:
+```
+Price metadata: { plan: "growth", interval: "monthly" }
+```
+
+### Rotas de billing (novas — `src/routes/v1/billing.ts`)
+```
+POST /billing/checkout          — cria Stripe Checkout Session (redireciona para pagar)
+POST /billing/portal            — cria Customer Portal Session (gerenciar assinatura)
+POST /billing/cancel            — define cancel_at_period_end = true (não cancela imediato)
+POST /billing/upgrade           — troca de plano (Stripe faz prorata automático)
+GET  /billing/subscription      — retorna estado atual da assinatura do workspace
+POST /webhooks/stripe           — recebe eventos do Stripe
+```
+
+**CRÍTICO no webhook:**
+- Rota `/webhooks/stripe` **NÃO tem** `preHandler: [fastify.authenticate]` — o Stripe não envia JWT
+- Validar assinatura com `stripe.webhooks.constructEvent(rawBody, stripeSignatureHeader, STRIPE_WEBHOOK_SECRET)`
+- O `rawBody` deve ser o body **bruto** (antes do parse JSON) — Fastify tem hook `addContentTypeParser` para isso
+- **Nunca ativar assinatura pela success URL do Checkout** — sempre pelo webhook `invoice.paid`
+
+### Webhooks do Stripe a ouvir
+| Evento | Ação no backend |
+|---|---|
+| `invoice.paid` | `status = active`, atualiza `current_period_end`, atualiza `workspaces.plan` |
+| `invoice.payment_failed` | `status = past_due` (não bloqueia ainda — Stripe vai retentar) |
+| `customer.subscription.updated` | Atualiza `plan`, `status`, `cancel_at_period_end`, `stripe_price_id` |
+| `customer.subscription.deleted` | `status = canceled` — acesso limitado a leitura |
+
+### Grace period após falha de pagamento
+- **Delegar ao Stripe Smart Retries** (configurar no Stripe Dashboard: 3 tentativas em ~7 dias)
+- Backend só bloqueia quando `status = canceled` ou `status = unpaid` (Stripe desistiu)
+- Nunca bloquear imediatamente em `past_due`
+
+### Cancelamento
+- Usuário cancela → `cancel_at_period_end = true` (não cancela imediato)
+- Continua com acesso até o fim do ciclo pago
+- No fim do ciclo, Stripe emite `customer.subscription.deleted` → webhook muda para `status = canceled`
+
+### Job agendado (deleção de workspaces)
+- Roda **diariamente**
+- Busca workspaces com `subscriptions.status IN ('trial_expired', 'canceled')` E `updated_at < now() - interval '30 days'`
+- Envia email de aviso 16 dias antes de deletar
+- Pode ser implementado como: cron no servidor, Supabase Edge Function agendada, ou pg_cron
+
+### Variáveis de ambiente adicionais (a acrescentar no `.env`)
+```
+STRIPE_SECRET_KEY=sk_test_...          # chave secreta do Stripe (test mode)
+STRIPE_WEBHOOK_SECRET=whsec_...        # obtido com: stripe listen --forward-to ...
+STRIPE_PRICE_BASIC=price_...           # ID do Price no Stripe Dashboard
+STRIPE_PRICE_GROWTH=price_...
+STRIPE_PRICE_PRO=price_...
+```
+
+### Ordem de implementação recomendada
+1. Renomear `intermediate` → `growth` no banco e em `plans.ts`
+2. Criar tabela `subscriptions` no Supabase
+3. Alterar `POST /workspaces` para inserir em `subscriptions` com `status=trialing` ao criar workspace
+4. Criar middleware de verificação de assinatura (lê `subscriptions.status` antes de rotas mutáveis)
+5. Instalar `stripe` npm package
+6. Criar `src/lib/stripe.ts` com o client Stripe
+7. Criar `src/routes/v1/billing.ts` com as rotas de billing
+8. Implementar o webhook `/webhooks/stripe` com validação de assinatura
+9. Implementar o job de deleção de workspaces expirados
