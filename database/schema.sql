@@ -73,6 +73,7 @@ create table if not exists public.products (
   id           uuid primary key default uuid_generate_v4(),
   workspace_id uuid not null references public.workspaces(id) on delete cascade,
   name         text not null,
+  source_name  text,             -- nome original na criação (imutável) — usado para matching de NFC-e
   code         text not null,
   category     text not null default '',
   unit         text not null default 'un',

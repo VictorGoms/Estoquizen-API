@@ -18,7 +18,7 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
 
     const { data, error } = await db
       .from("products")
-      .select("id, workspace_id, name, code, unit, price, qty, min_qty, max_qty, location, supplier, image_url, nota_fiscal, created_at, updated_at")
+      .select("id, workspace_id, name, source_name, code, unit, price, qty, min_qty, max_qty, location, supplier, image_url, nota_fiscal, created_at, updated_at")
       .eq("workspace_id", workspace_id)
       .order("name");
 
@@ -34,7 +34,7 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
 
     const { data, error } = await db
       .from("products")
-      .select("id, workspace_id, name, code, unit, price, qty, min_qty, max_qty, location, supplier, image_url, nota_fiscal, created_at, updated_at")
+      .select("id, workspace_id, name, source_name, code, unit, price, qty, min_qty, max_qty, location, supplier, image_url, nota_fiscal, created_at, updated_at")
       .eq("id", id)
       .single();
 
@@ -77,7 +77,7 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
 
     const { data, error } = await db
       .from("products")
-      .insert({ ...parsed.data, code, qty: 0, created_by: req.user.id })
+      .insert({ ...parsed.data, code, source_name: parsed.data.name, qty: 0, created_by: req.user.id })
       .select()
       .single();
 
