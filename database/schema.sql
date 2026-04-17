@@ -143,6 +143,8 @@ drop policy if exists "Usuário vê seus próprios memberships"         on publi
 drop policy if exists "Admin/Owner gerencia membros"                  on public.workspace_members;
 drop policy if exists "Usuário aceita próprio convite"               on public.workspace_members;
 drop policy if exists "Usuário recusa próprio convite"               on public.workspace_members;
+drop policy if exists "Usuário autenticado cria workspace"           on public.workspaces;
+drop policy if exists "Criador adiciona-se como owner"               on public.workspace_members;
 drop policy if exists "Membro vê produtos do workspace"              on public.products;
 drop policy if exists "Membro cria produtos"                         on public.products;
 drop policy if exists "Membro atualiza produtos"                     on public.products;
@@ -184,6 +186,11 @@ create policy "Membro pode atualizar workspace (owner/admin)"
   on public.workspaces for update
   using (id in (select public.my_admin_workspace_ids()));
 
+-- Qualquer usuário autenticado pode criar um workspace (owner = criador)
+create policy "Usuário autenticado cria workspace"
+  on public.workspaces for insert
+  with check (created_by = auth.uid());
+
 -- ── workspace_members ────────────────────────────────────────
 create policy "Membro vê outros membros do mesmo workspace"
   on public.workspace_members for select
@@ -208,6 +215,18 @@ create policy "Usuário aceita próprio convite"
 create policy "Usuário recusa próprio convite"
   on public.workspace_members for delete
   using (user_id = auth.uid() and status = 'pendente');
+
+-- Criador do workspace adiciona a si mesmo como owner (INSERT inicial)
+create policy "Criador adiciona-se como owner"
+  on public.workspace_members for insert
+  with check (
+    user_id = auth.uid()
+    and role = 'owner'
+    and status = 'ativo'
+    and workspace_id in (
+      select id from public.workspaces where created_by = auth.uid()
+    )
+  );
 
 -- ── products ─────────────────────────────────────────────────
 create policy "Membro vê produtos do workspace"
