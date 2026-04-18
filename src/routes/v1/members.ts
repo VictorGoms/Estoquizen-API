@@ -77,16 +77,37 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
       .ilike("email", email)
       .maybeSingle();
 
+    const siteUrl = process.env.SITE_URL ?? "https://estoquizen.vercel.app";
+    const redirectTo = `${siteUrl}/auth/callback`;
+
     let userId: string;
 
     if (existingProfile) {
-      /* Usuário já tem conta — apenas adiciona ao workspace */
-      userId = existingProfile.id;
+      /* Usuário existe — verificar se já confirmou o email (set-password) */
+      const { data: { user: authUser } } = await supabaseAdmin.auth.admin.getUserById(existingProfile.id);
+      const confirmed = !!authUser?.email_confirmed_at;
+
+      if (!confirmed) {
+        /* Nunca clicou no link — deletar e re-convidar para enviar email novo */
+        await supabaseAdmin.auth.admin.deleteUser(existingProfile.id);
+        const { data: invite, error: inviteErr } = await supabaseAdmin.auth.admin.inviteUserByEmail(
+          email,
+          { redirectTo, data: { name, workspace_id, role, from_invite: true } },
+        );
+        if (inviteErr) return reply.status(500).send(fail(dbError(inviteErr)));
+        userId = invite.user.id;
+        await supabaseAdmin
+          .from("profiles")
+          .upsert({ id: userId, name, email }, { onConflict: "id" });
+      } else {
+        /* Usuário já tem conta ativa — apenas adiciona ao workspace */
+        userId = existingProfile.id;
+      }
     } else {
       /* Usuário novo — cria conta e envia email de convite */
       const { data: invite, error: inviteErr } = await supabaseAdmin.auth.admin.inviteUserByEmail(
         email,
-        { data: { name, workspace_id, role, from_invite: true } },
+        { redirectTo, data: { name, workspace_id, role, from_invite: true } },
       );
       if (inviteErr) return reply.status(500).send(fail(dbError(inviteErr)));
       userId = invite.user.id;
