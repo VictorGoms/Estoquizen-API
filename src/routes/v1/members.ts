@@ -90,6 +90,11 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
       );
       if (inviteErr) return reply.status(500).send(fail(dbError(inviteErr)));
       userId = invite.user.id;
+
+      /* Garante que o profile tem o nome — o trigger pode criar sem nome */
+      await supabaseAdmin
+        .from("profiles")
+        .upsert({ id: userId, name, email }, { onConflict: "id" });
     }
 
     /* Garante que não há convite duplicado para o mesmo workspace */
