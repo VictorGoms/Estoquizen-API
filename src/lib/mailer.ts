@@ -1,6 +1,20 @@
-import { Resend } from "resend";
+import nodemailer from "nodemailer";
+import type SMTPTransport from "nodemailer/lib/smtp-transport/index.js";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const opts: SMTPTransport.Options = {
+  host:              process.env.SMTP_HOST ?? "smtp.gmail.com",
+  port:              Number(process.env.SMTP_PORT ?? 587),
+  secure:            false,
+  connectionTimeout: 10_000,
+  greetingTimeout:   10_000,
+  socketTimeout:     15_000,
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+};
+
+const transporter = nodemailer.createTransport(opts);
 
 export async function sendWorkspaceInviteEmail(params: {
   to:            string;
@@ -11,8 +25,8 @@ export async function sendWorkspaceInviteEmail(params: {
 }) {
   const { to, workspaceName, inviterName, acceptLink } = params;
 
-  await resend.emails.send({
-    from:    process.env.RESEND_FROM ?? "Estoquizen <onboarding@resend.dev>",
+  await transporter.sendMail({
+    from:    `"Estoquizen" <${process.env.SMTP_USER}>`,
     to,
     subject: `Você foi convidado para o workspace "${workspaceName}"`,
     html: `
