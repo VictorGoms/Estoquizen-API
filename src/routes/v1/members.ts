@@ -77,7 +77,7 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
       .ilike("email", email)
       .maybeSingle();
 
-    const siteUrl = process.env.SITE_URL ?? "https://estoquizen.vercel.app";
+    const siteUrl = (process.env.ALLOWED_ORIGINS ?? "https://estoquizen.vercel.app").split(",")[0].trim();
     const redirectTo = `${siteUrl}/auth/callback`;
 
     let userId: string;
