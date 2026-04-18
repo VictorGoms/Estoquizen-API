@@ -1,23 +1,6 @@
-import nodemailer from "nodemailer";
-import type SMTPTransport from "nodemailer/lib/smtp-transport/index.js";
+import { Resend } from "resend";
 
-const opts: SMTPTransport.Options = {
-  host:              process.env.SMTP_HOST ?? "smtp.gmail.com",
-  port:              Number(process.env.SMTP_PORT ?? 587),
-  secure:            false,
-  connectionTimeout: 10_000,
-  greetingTimeout:   10_000,
-  socketTimeout:     15_000,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-};
-
-// força IPv4 — Railway não tem conectividade IPv6 para SMTP externo
-(opts as Record<string, unknown>).family = 4;
-
-const transporter = nodemailer.createTransport(opts);
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 export async function sendWorkspaceInviteEmail(params: {
   to:            string;
@@ -26,10 +9,10 @@ export async function sendWorkspaceInviteEmail(params: {
   inviterName:   string;
   acceptLink:    string;
 }) {
-  const { to, toName, workspaceName, inviterName, acceptLink } = params;
+  const { to, workspaceName, inviterName, acceptLink } = params;
 
-  await transporter.sendMail({
-    from:    `"Estoquizen" <${process.env.SMTP_USER}>`,
+  await resend.emails.send({
+    from:    process.env.RESEND_FROM ?? "Estoquizen <onboarding@resend.dev>",
     to,
     subject: `Você foi convidado para o workspace "${workspaceName}"`,
     html: `
