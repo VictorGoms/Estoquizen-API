@@ -351,3 +351,16 @@ que também vai inserir em `subscriptions`. Nesse momento:
 1. Remover a função `create_workspace` do Supabase: `drop function public.create_workspace(text, text);`
 2. Revertir `plan-selection/page.tsx` para `api.post("/workspaces", ...)`
 3. Remover as políticas RLS temporárias listadas acima
+
+### ✅ RPC `invite_member` — permanente (não remover)
+
+Convite de membros foi migrado para uma função Postgres `SECURITY DEFINER` permanente.
+Não tem relação com billing e não precisa ser revertida ao implementar o Stripe.
+
+A função valida internamente: autenticação (`auth.uid()`), permissão (owner/admin),
+existência do usuário por email em `auth.users`, e duplicidade de membro.
+
+**Limitação atual**: só funciona para usuários que já têm conta no Estoquizen.
+Convite por email para novos usuários (via `supabaseAdmin.auth.inviteUserByEmail`) pode
+ser adicionado à função futuramente usando uma extensão como `pg_net` ou via Railway,
+sem necessidade de remover o que já existe.
