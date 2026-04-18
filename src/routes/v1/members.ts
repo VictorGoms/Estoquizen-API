@@ -135,13 +135,14 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
         });
 
         if (!linkErr && linkData?.properties?.action_link) {
-          await sendWorkspaceInviteEmail({
+          /* fire-and-forget — nunca bloqueia a resposta da rota */
+          void sendWorkspaceInviteEmail({
             to:            email,
             toName:        name ?? email,
             workspaceName,
             inviterName,
             acceptLink:    linkData.properties.action_link,
-          }).catch(() => { /* silencia erro de email — não bloqueia o convite */ });
+          }).catch(() => {});
         }
       }
     } else {
