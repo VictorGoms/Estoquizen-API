@@ -19,7 +19,7 @@ serve(async (req) => {
       });
     }
 
-    const { email, workspace_id, role } = await req.json();
+    const { email, workspace_id, role, name } = await req.json();
     if (!email || !workspace_id || !role) {
       return new Response(JSON.stringify({ error: "Campos obrigatórios: email, workspace_id, role" }), {
         status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -62,7 +62,7 @@ serve(async (req) => {
 
     const { error: inviteErr } = await adminClient.auth.admin.inviteUserByEmail(email, {
       redirectTo: `${SITE_URL}/auth/callback`,
-      data: { workspace_id, role, from_invite: true },
+      data: { workspace_id, role, from_invite: true, name },
     });
 
     if (inviteErr) {
