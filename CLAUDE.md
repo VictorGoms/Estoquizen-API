@@ -304,3 +304,22 @@ STRIPE_PRICE_PRO=price_...
 7. Criar `src/routes/v1/billing.ts` com as rotas de billing
 8. Implementar o webhook `/webhooks/stripe` com validação de assinatura
 9. Implementar o job de deleção de workspaces expirados
+
+### ⚠️ Políticas RLS temporárias — remover ao implementar billing
+
+As políticas abaixo foram adicionadas **temporariamente** para permitir criação de workspace
+direto pelo frontend (sem Railway) enquanto o sistema de pagamento não existe.
+
+**Quando implementar o Stripe (passo 3 acima), estas políticas devem ser removidas**,
+pois a criação de workspace voltará a passar pelo Railway (`POST /workspaces`), que cria
+o registro de trial em `subscriptions`. Manter as políticas seria um risco: qualquer
+usuário autenticado poderia criar workspace sem passar pelo billing.
+
+SQL para remover quando chegar a hora:
+```sql
+drop policy if exists "Usuário autenticado cria workspace" on public.workspaces;
+drop policy if exists "Criador adiciona-se como owner"     on public.workspace_members;
+```
+
+E revertir `src/app/plan-selection/page.tsx` do frontend para usar `api.post("/workspaces", ...)`
+em vez das chamadas diretas ao Supabase.
