@@ -323,3 +323,31 @@ drop policy if exists "Criador adiciona-se como owner"     on public.workspace_m
 
 E revertir `src/app/plan-selection/page.tsx` do frontend para usar `api.post("/workspaces", ...)`
 em vez das chamadas diretas ao Supabase.
+
+### ⚠️ RPC `create_workspace` — também remover ao implementar billing
+
+Durante os testes descobrimos que INSERT direto via PostgREST retorna 403 mesmo com JWT válido
+e políticas RLS corretas (comportamento inconsistente do Supabase com ES256 + RLS + INSERT).
+A solução foi criar uma função Postgres `SECURITY DEFINER`:
+
+```sql
+-- Função temporária — criada em 2026-04-18, remover quando criar workspace voltar ao Railway
+create or replace function public.create_workspace(p_name text, p_plan text)
+returns json language plpgsql security definer set search_path = public as $$
+declare v_user_id uuid; v_workspace public.workspaces;
+begin
+  v_user_id := auth.uid();
+  if v_user_id is null then raise exception 'Not authenticated'; end if;
+  insert into public.workspaces (name, plan, created_by) values (p_name, p_plan, v_user_id) returning * into v_workspace;
+  insert into public.workspace_members (workspace_id, user_id, role, status) values (v_workspace.id, v_user_id, 'owner', 'ativo');
+  return row_to_json(v_workspace);
+end; $$;
+```
+
+O frontend chama via `supabase.rpc("create_workspace", { p_name, p_plan })`.
+
+**Quando implementar o Stripe**, a criação de workspace volta para o Railway (`POST /workspaces`),
+que também vai inserir em `subscriptions`. Nesse momento:
+1. Remover a função `create_workspace` do Supabase: `drop function public.create_workspace(text, text);`
+2. Revertir `plan-selection/page.tsx` para `api.post("/workspaces", ...)`
+3. Remover as políticas RLS temporárias listadas acima
