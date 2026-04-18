@@ -86,7 +86,7 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
       /* Usuário novo — cria conta e envia email de convite */
       const { data: invite, error: inviteErr } = await supabaseAdmin.auth.admin.inviteUserByEmail(
         email,
-        { data: { name, workspace_id, role } },
+        { data: { name, workspace_id, role, from_invite: true } },
       );
       if (inviteErr) return reply.status(500).send(fail(dbError(inviteErr)));
       userId = invite.user.id;
