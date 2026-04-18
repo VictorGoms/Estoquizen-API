@@ -14,10 +14,7 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
     const { workspace_id } = req.query as { workspace_id?: string };
     if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
 
-    const token = req.headers.authorization!.slice(7);
-    const db    = supabaseForUser(token);
-
-    const { data, error } = await db
+    const { data, error } = await supabaseAdmin
       .from("workspace_members")
       .select("*, profiles(id, name, email, phone, avatar_color)")
       .eq("workspace_id", workspace_id)
