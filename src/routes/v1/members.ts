@@ -3,6 +3,7 @@ import { InviteMemberSchema, UpdateMemberSchema } from "../../schemas/member.sch
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { ok, fail, dbError } from "../../lib/response.js";
 import { getLimits } from "../../lib/plans.js";
+import { sendWorkspaceInviteEmail } from "../../lib/mailer.js";
 
 const membersRoutes: FastifyPluginAsync = async (fastify) => {
   const auth       = { preHandler: [fastify.authenticate] };
@@ -116,8 +117,32 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
           .from("profiles")
           .upsert({ id: userId, name, email }, { onConflict: "id" });
       } else {
-        /* Usuário já tem conta ativa — adiciona direto como ativo (já pode logar) */
+        /* Usuário confirmado — gera magic link e envia email de convite */
         userId = existingProfile.id;
+
+        const { data: { user: inviter } } = await supabaseAdmin.auth.admin.getUserById(req.user.id);
+        const { data: inviterProfile }    = await supabaseAdmin.from("profiles").select("name").eq("id", req.user.id).single();
+        const { data: wsData }            = await supabaseAdmin.from("workspaces").select("name").eq("id", workspace_id).single();
+
+        const inviterName    = inviterProfile?.name ?? inviter?.email ?? "Alguém";
+        const workspaceName  = wsData?.name ?? "um workspace";
+        const acceptRedirect = `${siteUrl}/aceitar-convite?workspace_id=${workspace_id}`;
+
+        const { data: linkData, error: linkErr } = await supabaseAdmin.auth.admin.generateLink({
+          type:    "magiclink",
+          email,
+          options: { redirectTo: acceptRedirect },
+        });
+
+        if (!linkErr && linkData?.properties?.action_link) {
+          await sendWorkspaceInviteEmail({
+            to:            email,
+            toName:        name,
+            workspaceName,
+            inviterName,
+            acceptLink:    linkData.properties.action_link,
+          }).catch(() => { /* silencia erro de email — não bloqueia o convite */ });
+        }
       }
     } else {
       /* Usuário novo — cria conta e envia email de convite */
@@ -149,8 +174,7 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(409).send(fail(msg));
     }
 
-    /* Usuário confirmado entra como ativo direto (não precisa de email) */
-    const memberStatus = confirmedUser ? "ativo" : "pendente";
+    const memberStatus = "pendente";
 
     const { error: memberErr } = await supabaseAdmin
       .from("workspace_members")
@@ -164,10 +188,32 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (memberErr) return reply.status(500).send(fail(dbError(memberErr)));
 
-    const msg = confirmedUser
-      ? `${email} foi adicionado ao workspace. Verá o novo workspace ao fazer login.`
-      : `Convite enviado para ${email}.`;
+    const msg = `Convite enviado para ${email}.`;
     return reply.status(201).send(ok({ message: msg }));
+  });
+
+  /* POST /members/accept — usuário aceita convite pendente */
+  fastify.post("/members/accept", auth, async (req, reply) => {
+    const { workspace_id } = req.body as { workspace_id?: string };
+    if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
+
+    const { data: membership } = await supabaseAdmin
+      .from("workspace_members")
+      .select("id, status")
+      .eq("workspace_id", workspace_id)
+      .eq("user_id", req.user.id)
+      .maybeSingle();
+
+    if (!membership) return reply.status(404).send(fail("Convite não encontrado"));
+    if (membership.status === "ativo") return reply.send(ok({ message: "Já é membro ativo" }));
+
+    const { error } = await supabaseAdmin
+      .from("workspace_members")
+      .update({ status: "ativo" })
+      .eq("id", membership.id);
+
+    if (error) return reply.status(500).send(fail(dbError(error)));
+    return reply.send(ok({ message: "Convite aceito" }));
   });
 
   /* PATCH /members/:id */
