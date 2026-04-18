@@ -58,15 +58,30 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
 
     const limits = getLimits(ws?.plan ?? "basic");
 
-    const { count } = await supabaseAdmin
+    /* Pendentes + ativos contam juntos contra o limite do plano */
+    const { count: memberCount } = await supabaseAdmin
       .from("workspace_members")
       .select("id", { count: "exact", head: true })
       .eq("workspace_id", workspace_id)
-      .eq("status", "ativo");
+      .in("status", ["ativo", "pendente"]);
 
-    if ((count ?? 0) >= limits.members) {
+    if ((memberCount ?? 0) >= limits.members) {
       return reply.status(403).send(fail(
-        `Limite do plano ${limits.label} atingido: máximo de ${limits.members} membros. Faça upgrade para continuar.`
+        `Limite do plano ${limits.label} atingido: máximo de ${limits.members} membros (incluindo convites pendentes). Faça upgrade para continuar.`
+      ));
+    }
+
+    /* Limite diário de convites por workspace */
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { count: dailyCount } = await supabaseAdmin
+      .from("workspace_members")
+      .select("id", { count: "exact", head: true })
+      .eq("workspace_id", workspace_id)
+      .gte("created_at", since);
+
+    if ((dailyCount ?? 0) >= limits.dailyInvites) {
+      return reply.status(429).send(fail(
+        `Limite de ${limits.dailyInvites} convites por dia atingido. Tente novamente amanhã.`
       ));
     }
 
