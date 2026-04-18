@@ -137,6 +137,56 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send(ok({ message: "Membro atualizado" }));
   });
 
+  /* DELETE /members/:id/invite — revoga convite pendente */
+  fastify.delete("/members/:id/invite", authStrict, async (req, reply) => {
+    const { id }           = req.params as { id: string }; // user_id do convidado
+    const { workspace_id } = req.query  as { workspace_id?: string };
+    if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
+
+    /* Verifica que o requisitante é owner ou admin */
+    const { data: requester } = await supabaseAdmin
+      .from("workspace_members")
+      .select("role")
+      .eq("workspace_id", workspace_id)
+      .eq("user_id", req.user.id)
+      .eq("status", "ativo")
+      .single();
+
+    if (!requester || !["owner", "admin"].includes(requester.role)) {
+      return reply.status(403).send(fail("Sem permissão para revogar convites"));
+    }
+
+    /* Confirma que existe convite pendente */
+    const { data: membership } = await supabaseAdmin
+      .from("workspace_members")
+      .select("id")
+      .eq("workspace_id", workspace_id)
+      .eq("user_id", id)
+      .eq("status", "pendente")
+      .single();
+
+    if (!membership) return reply.status(404).send(fail("Convite pendente não encontrado"));
+
+    /* Verifica se o usuário nunca fez login (nunca ativou a conta) */
+    const { data: { user: invitedUser } } = await supabaseAdmin.auth.admin.getUserById(id);
+    const neverLoggedIn = !invitedUser?.last_sign_in_at;
+
+    if (neverLoggedIn) {
+      /* Deleta a conta — cascata remove workspace_members automaticamente */
+      const { error: delErr } = await supabaseAdmin.auth.admin.deleteUser(id);
+      if (delErr) return reply.status(500).send(fail(dbError(delErr)));
+    } else {
+      /* Usuário já tem conta ativa — remove só do workspace */
+      const { error: delErr } = await supabaseAdmin
+        .from("workspace_members")
+        .delete()
+        .eq("id", membership.id);
+      if (delErr) return reply.status(500).send(fail(dbError(delErr)));
+    }
+
+    return reply.send(ok({ revoked: true, accountDeleted: neverLoggedIn }));
+  });
+
   /* DELETE /members/:id — remove do workspace */
   fastify.delete("/members/:id", authWrite, async (req, reply) => {
     const { id }          = req.params as { id: string };

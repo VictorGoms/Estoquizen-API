@@ -60,7 +60,7 @@ serve(async (req) => {
     // Envia convite via Admin API
     const adminClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
 
-    const { error: inviteErr } = await adminClient.auth.admin.inviteUserByEmail(email, {
+    const { data: inviteData, error: inviteErr } = await adminClient.auth.admin.inviteUserByEmail(email, {
       redirectTo: `${SITE_URL}/auth/callback`,
       data: { workspace_id, role, from_invite: true, name },
     });
@@ -69,6 +69,22 @@ serve(async (req) => {
       return new Response(JSON.stringify({ error: inviteErr.message }), {
         status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    // Cria linha em workspace_members com status pendente para rastreamento
+    const { error: memberErr } = await adminClient
+      .from("workspace_members")
+      .insert({
+        workspace_id,
+        user_id:    inviteData.user.id,
+        role,
+        status:     "pendente",
+        invited_by: user.id,
+      });
+
+    if (memberErr) {
+      // Não bloqueia o fluxo — convite foi enviado, mas loga o erro
+      console.error("Erro ao criar workspace_member:", memberErr.message);
     }
 
     return new Response(JSON.stringify({ success: true }), {
