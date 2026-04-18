@@ -137,7 +137,7 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
         if (!linkErr && linkData?.properties?.action_link) {
           await sendWorkspaceInviteEmail({
             to:            email,
-            toName:        name,
+            toName:        name ?? email,
             workspaceName,
             inviterName,
             acceptLink:    linkData.properties.action_link,
