@@ -96,13 +96,14 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
     const redirectTo = `${siteUrl}/auth/callback`;
 
     let userId: string;
+    let confirmedUser = false;
 
     if (existingProfile) {
       /* Usuário existe — verificar se já confirmou o email (set-password) */
       const { data: { user: authUser } } = await supabaseAdmin.auth.admin.getUserById(existingProfile.id);
-      const confirmed = !!authUser?.email_confirmed_at;
+      confirmedUser = !!authUser?.email_confirmed_at;
 
-      if (!confirmed) {
+      if (!confirmedUser) {
         /* Nunca clicou no link — deletar e re-convidar para enviar email novo */
         await supabaseAdmin.auth.admin.deleteUser(existingProfile.id);
         const { data: invite, error: inviteErr } = await supabaseAdmin.auth.admin.inviteUserByEmail(
@@ -115,7 +116,7 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
           .from("profiles")
           .upsert({ id: userId, name, email }, { onConflict: "id" });
       } else {
-        /* Usuário já tem conta ativa — apenas adiciona ao workspace */
+        /* Usuário já tem conta ativa — adiciona direto como ativo (já pode logar) */
         userId = existingProfile.id;
       }
     } else {
@@ -148,21 +149,23 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(409).send(fail(msg));
     }
 
-    /* Insere com status pendente */
+    /* Usuário confirmado entra como ativo direto (não precisa de email) */
+    const memberStatus = confirmedUser ? "ativo" : "pendente";
+
     const { error: memberErr } = await supabaseAdmin
       .from("workspace_members")
       .insert({
         workspace_id,
         user_id:    userId,
         role,
-        status:     "pendente",
+        status:     memberStatus,
         invited_by: req.user.id,
       });
 
     if (memberErr) return reply.status(500).send(fail(dbError(memberErr)));
 
-    const msg = existingProfile
-      ? `${email} foi adicionado ao workspace e verá o convite ao fazer login.`
+    const msg = confirmedUser
+      ? `${email} foi adicionado ao workspace. Verá o novo workspace ao fazer login.`
       : `Convite enviado para ${email}.`;
     return reply.status(201).send(ok({ message: msg }));
   });
