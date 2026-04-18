@@ -1,26 +1,32 @@
 import nodemailer from "nodemailer";
+import type SMTPTransport from "nodemailer/lib/smtp-transport/index.js";
 
-const transporter = nodemailer.createTransport({
+const opts: SMTPTransport.Options = {
   host:              process.env.SMTP_HOST ?? "smtp.gmail.com",
   port:              Number(process.env.SMTP_PORT ?? 587),
   secure:            false,
-  connectionTimeout: 5_000,
-  greetingTimeout:   5_000,
-  socketTimeout:     10_000,
+  connectionTimeout: 10_000,
+  greetingTimeout:   10_000,
+  socketTimeout:     15_000,
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
-});
+};
 
-export async function sendWorkspaceInviteEmail(opts: {
+// força IPv4 — Railway não tem conectividade IPv6 para SMTP externo
+(opts as Record<string, unknown>).family = 4;
+
+const transporter = nodemailer.createTransport(opts);
+
+export async function sendWorkspaceInviteEmail(params: {
   to:            string;
   toName:        string;
   workspaceName: string;
   inviterName:   string;
   acceptLink:    string;
 }) {
-  const { to, toName, workspaceName, inviterName, acceptLink } = opts;
+  const { to, toName, workspaceName, inviterName, acceptLink } = params;
 
   await transporter.sendMail({
     from:    `"Estoquizen" <${process.env.SMTP_USER}>`,
