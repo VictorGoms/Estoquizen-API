@@ -134,15 +134,22 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
           options: { redirectTo: acceptRedirect },
         });
 
+        console.log("[invite] generateLink error:", linkErr);
+        console.log("[invite] action_link:", linkData?.properties?.action_link ? "OK" : "MISSING");
+        console.log("[invite] SMTP_USER configured:", !!process.env.SMTP_USER);
+
         if (!linkErr && linkData?.properties?.action_link) {
-          /* fire-and-forget — nunca bloqueia a resposta da rota */
           void sendWorkspaceInviteEmail({
             to:            email,
             toName:        name ?? email,
             workspaceName,
             inviterName,
             acceptLink:    linkData.properties.action_link,
-          }).catch(() => {});
+          }).then(() => {
+            console.log("[invite] email sent OK to", email);
+          }).catch((err) => {
+            console.error("[invite] email error:", err?.message ?? err);
+          });
         }
       }
     } else {
