@@ -1,7 +1,7 @@
 # Estoquizen — API (Backend)
 
 ## Visão geral do projeto
-SaaS de gestão de estoque multi-tenant. O backend é uma API REST que serve o frontend Next.js em `../TesteFrontSaas`. Autenticação e banco de dados via Supabase (Postgres). Sem ORM — queries diretas com `@supabase/supabase-js`.
+SaaS de gestão de estoque multi-tenant. O backend é uma API REST que serve o frontend Next.js em `../estoquizen-frontend`. Autenticação e banco de dados via Supabase (Postgres). Sem ORM — queries diretas com `@supabase/supabase-js`.
 
 ## Stack
 - Runtime: Node.js + TypeScript (ESM, `"module": "NodeNext"`)
@@ -9,6 +9,7 @@ SaaS de gestão de estoque multi-tenant. O backend é uma API REST que serve o f
 - Banco: Supabase (Postgres) — sem Prisma, sem ORM
 - Validação: Zod (sempre antes de tocar o banco)
 - Auth: Supabase Auth (JWT verificado via `supabaseAdmin.auth.getUser`)
+- Email: nodemailer (Gmail SMTP) — para convites de usuários já cadastrados
 - Docs: Swagger UI em `/docs` (via `@fastify/swagger` + `@fastify/swagger-ui`)
 
 ## Portas
@@ -35,8 +36,9 @@ src/
     supabase.ts          — supabaseAdmin + supabaseForUser(token)
     response.ts          — ok(), fail(), dbError() helpers
     sanitize.ts          — sanitizeText, sanitizeCode, sanitizeNumber, sanitizeEmail
-    plans.ts             — PLAN_LIMITS (basic/intermediate/pro) + getLimits()
+    plans.ts             — PLAN_LIMITS (basic/intermediate/pro) + getLimits() + dailyInvites
     nfce.ts              — consultarNfce(chave) — faz scraping/consulta da SEFAZ
+    mailer.ts            — sendWorkspaceInviteEmail() via nodemailer/Gmail SMTP
   types/index.ts         — ApiResponse<T>, augment FastifyRequest (req.user)
 database/
   schema.sql             — schema completo do Postgres (aplicar no Supabase SQL Editor)
@@ -77,19 +79,26 @@ database/
 - `DELETE /workspaces/:id` — exclui workspace (apenas owner); cascata apaga members, products e movements via FK
 
 ### Membros — `src/routes/v1/members.ts`
-- `GET  /members?workspace_id=xxx` — lista membros com perfil
-- `POST /members/invite` — convida membro: se já tem conta adiciona direto; se não, envia email de convite via Supabase Admin; valida limite do plano
+- `GET  /members?workspace_id=xxx` — lista membros com perfil (usa supabaseAdmin + dois selects separados, pois não há FK entre workspace_members.user_id e profiles.id que o PostgREST aceite)
+- `POST /members/invite` — convida membro com lógica diferente por tipo de usuário:
+  - **Usuário novo**: cria conta via `inviteUserByEmail`, envia email de convite Supabase, status=pendente
+  - **Usuário não confirmado** (convidado mas nunca clicou no link): deleta conta antiga e re-convida
+  - **Usuário confirmado** (já tem conta ativa): gera magic link via `generateLink`, envia email customizado via nodemailer, status=pendente — ao clicar vai para `/aceitar-convite`
+  - Valida limite do plano (ativo + pendente contam juntos)
+  - Valida limite diário de convites por workspace (basic=10, growth=25, pro=50)
+- `POST /members/accept` — usuário autenticado aceita convite pendente (`{ workspace_id }` → status=ativo)
 - `PATCH /members/:id` — atualiza role/status/perfil
-- `DELETE /members/:id?workspace_id=xxx` — remove do workspace
+- `DELETE /members/:id/invite?workspace_id=xxx` — revoga convite pendente; se nunca logou, deleta a conta também
+- `DELETE /members/:id?workspace_id=xxx` — remove membro ativo do workspace
 
 ### NFC-e — `src/routes/v1/nfe.ts`
 - `POST /nfe/consultar` — recebe `{ tipo: "nfce", chave: "44 dígitos" }` e retorna lista de itens (`{ chave, total_itens, itens[] }`)
 
 ## Planos — `src/lib/plans.ts`
 ```
-basic        → R$39/mês  → 150 produtos, 3 membros
-intermediate → R$69/mês  → 500 produtos, 7 membros  (label: "Growth")
-pro          → R$129/mês → 2000 produtos, 12 membros
+basic        → R$39/mês  → 150 produtos, 3 membros,  10 convites/dia
+intermediate → R$69/mês  → 500 produtos, 7 membros,  25 convites/dia  (label: "Growth")
+pro          → R$129/mês → 2000 produtos, 12 membros, 50 convites/dia
 ```
 Limites verificados no servidor em `POST /products` e `POST /members/invite`.
 
@@ -100,8 +109,11 @@ Limites verificados no servidor em `POST /products` e `POST /members/invite`.
 - `products`          — id, workspace_id, name, code (NOT NULL), category, unit, price, qty, min_qty, max_qty, location, supplier, image_url, nota_fiscal, created_by, created_at, updated_at
 - `movements`         — id, product_id, delta, reason, created_by, created_at
 
-### RPC (função Postgres)
+### RPCs (funções Postgres)
 - `adjust_product_qty(p_product_id, p_delta, p_reason, p_user_id)` — ajuste atômico de estoque + insert em movements
+- `accept_workspace_invite()` — chamada pelo frontend em `/set-password` após definir senha; atualiza workspace_members.status para 'ativo'
+- `email_exists(p_email text) → boolean` — verifica se email existe em auth.users (usado no forgot-password)
+- `create_workspace(p_name text, p_plan text) → json` — **TEMPORÁRIA**, ver nota abaixo
 
 ## Rate limiting (server.ts)
 - Global: 200 req/min por usuário (userId do JWT) ou IP como fallback
@@ -120,7 +132,7 @@ Schema completo em `database/schema.sql`.
 Para aplicar: Supabase Dashboard → SQL Editor → colar o arquivo → Run.
 
 ## Variáveis de ambiente
-Copiar `.env.example` → `.env` e preencher com dados do Supabase Dashboard → Settings → API
+Copiar `.env.example` → `.env` e preencher:
 
 ```
 PORT=3001
@@ -129,6 +141,12 @@ SUPABASE_URL=https://SEU_PROJETO.supabase.co
 SUPABASE_ANON_KEY=sua_anon_key_aqui
 SUPABASE_SERVICE_ROLE_KEY=sua_service_role_key_aqui   # NUNCA expor no frontend
 ALLOWED_ORIGINS=http://localhost:3000
+
+# Gmail SMTP — mesmo email/app-password configurado no Supabase
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=seu@gmail.com
+SMTP_PASS=sua_app_password_16_chars
 ```
 
 ## Frontend (../estoquizen-frontend)
@@ -139,12 +157,40 @@ ALLOWED_ORIGINS=http://localhost:3000
 - HTTPS local: `next dev --experimental-https` com certificado mkcert (necessário para câmera em rede local)
 - `reactStrictMode: false` no `next.config.ts` (evita double-mount que quebrava o BarcodeScanner)
 
-## Decisions importantes já tomadas
+### Páginas de auth do frontend
+- `/login` — login email+senha + Google OAuth; erros em português
+- `/forgot-password` — verifica se email existe via RPC `email_exists`, envia reset via `resetPasswordForEmail` com `redirectTo=/reset-password`, cooldown 60s
+- `/reset-password` — se tiver `?code=` na URL chama `exchangeCodeForSession(code)` antes de mostrar o form; chama `supabase.auth.updateUser({ password })`
+- `/auth/callback` — ponto de redirect do Supabase para OAuth (Google) e convites de novos usuários; chama `exchangeCodeForSession(code)` e redireciona com base em `from_invite` no user_metadata
+- `/set-password` — tela de definir senha para usuários **recém convidados** (novos no sistema); chama RPC `accept_workspace_invite` após definir senha
+- `/aceitar-convite?workspace_id=xxx` — tela de aceite para usuários **já cadastrados** que foram convidados; troca o `?code=` da magic link, exibe nome do workspace, chama `POST /members/accept`
+- `/convite-invalido` — tela de erro quando convite não existe ou foi revogado
+
+### Context de usuário — `src/lib/userContext.tsx`
+- `UserProvider` envolve todas as páginas protegidas (via `SessionGuardWrapper`)
+- Expõe `useUser()` → `{ userName, userEmail, avatarUrl }`
+- Faz fetch do perfil uma vez por sessão e cacheia em `sessionStorage` (evita flicker de ícone/nome ao navegar)
+- `clearSession()` em `src/lib/session.ts` também limpa o cache do sessionStorage
+
+### Paths públicos (SessionGuardWrapper)
+```
+/ /login /register /register-company /plan-selection
+/auth/callback /forgot-password /reset-password
+/convite-invalido /set-password /aceitar-convite
+```
+
+## Decisões importantes já tomadas
+
 - **Sem ORM**: queries diretas com supabase-js para simplicidade e controle de RLS
 - **RLS pelo token**: `supabaseForUser(token)` cria client autenticado que respeita as policies da tabela; operações admin usam `supabaseAdmin` explicitamente
 - **code auto-gerado**: produtos sem código (vindos de NFC-e) recebem `AUTO-XXXXXXXX` para satisfazer NOT NULL
 - **Estoque atômico**: ajuste via RPC Postgres evita race condition em ambientes com múltiplos usuários simultâneos
 - **Stats via join**: movements não tem workspace_id; join com products (`products!inner(workspace_id)`) é necessário para contar movimentações por workspace
+- **GET /members usa dois selects**: PostgREST não aceita join `profiles(...)` pois não há FK explícita entre `workspace_members.user_id` e `profiles.id` — solução é buscar members e profiles separadamente e fazer merge no código
+- **Invite flow separado por tipo de usuário**: novo → `inviteUserByEmail` (Supabase envia email); não-confirmado → deleta + re-convida; confirmado → `generateLink` + nodemailer (email customizado com magic link)
+- **PKCE flow**: Supabase usa `?code=` na URL (não hash `#type=recovery`). Sempre usar `exchangeCodeForSession(code)` explicitamente. O `onAuthStateChange` sozinho não é suficiente
+- **Reset password sem passar pelo /auth/callback**: `redirectTo` do `resetPasswordForEmail` aponta direto para `/reset-password`, que troca o code ele mesmo. Evita conflito com `from_invite` no user_metadata de usuários que foram convidados antes
+- **Gmail SMTP**: Supabase configurado com Gmail SMTP (500 emails/dia). Mesmo app-password usado nas vars SMTP_PASS da API Railway
 
 ---
 
@@ -352,15 +398,13 @@ que também vai inserir em `subscriptions`. Nesse momento:
 2. Revertir `plan-selection/page.tsx` para `api.post("/workspaces", ...)`
 3. Remover as políticas RLS temporárias listadas acima
 
-### ✅ RPC `invite_member` — permanente (não remover)
+### ✅ RPC `invite_member` — substituída pela rota da API
 
-Convite de membros foi migrado para uma função Postgres `SECURITY DEFINER` permanente.
-Não tem relação com billing e não precisa ser revertida ao implementar o Stripe.
+O convite de membros passou a ser gerenciado inteiramente pela rota `POST /members/invite` no Railway,
+que trata os três casos (novo, não-confirmado, confirmado) e envia emails via nodemailer quando necessário.
+Não há mais dependência de Edge Function ou RPC para o fluxo de convite.
 
-A função valida internamente: autenticação (`auth.uid()`), permissão (owner/admin),
-existência do usuário por email em `auth.users`, e duplicidade de membro.
-
-**Limitação atual**: só funciona para usuários que já têm conta no Estoquizen.
-Convite por email para novos usuários (via `supabaseAdmin.auth.inviteUserByEmail`) pode
-ser adicionado à função futuramente usando uma extensão como `pg_net` ou via Railway,
-sem necessidade de remover o que já existe.
+### ✅ RPCs permanentes no Supabase
+- `accept_workspace_invite()` — chamada pelo frontend em `/set-password` após definir senha
+- `email_exists(p_email)` — chamada pelo frontend em `/forgot-password` para verificar cadastro
+- `adjust_product_qty(...)` — ajuste atômico de estoque
