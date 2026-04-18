@@ -14,13 +14,30 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
     const { workspace_id } = req.query as { workspace_id?: string };
     if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
 
-    const { data, error } = await supabaseAdmin
+    const { data: memberRows, error: membersErr } = await supabaseAdmin
       .from("workspace_members")
-      .select("*, profiles(id, name, email, phone, avatar_color)")
+      .select("id, user_id, role, status, invited_by, created_at")
       .eq("workspace_id", workspace_id)
       .order("created_at");
 
-    if (error) return reply.status(500).send(fail(dbError(error)));
+    if (membersErr) return reply.status(500).send(fail(dbError(membersErr)));
+
+    const userIds = (memberRows ?? []).map((r) => r.user_id);
+    const profileMap = new Map<string, Record<string, unknown>>();
+
+    if (userIds.length > 0) {
+      const { data: profileRows } = await supabaseAdmin
+        .from("profiles")
+        .select("id, name, email, phone, avatar_color, avatar_url")
+        .in("id", userIds);
+      (profileRows ?? []).forEach((p) => profileMap.set(p.id, p));
+    }
+
+    const data = (memberRows ?? []).map((row) => ({
+      ...row,
+      profiles: profileMap.get(row.user_id) ?? null,
+    }));
+
     return reply.send(ok(data));
   });
 
