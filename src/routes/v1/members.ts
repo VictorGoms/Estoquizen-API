@@ -3,7 +3,6 @@ import { InviteMemberSchema, UpdateMemberSchema } from "../../schemas/member.sch
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { ok, fail, dbError } from "../../lib/response.js";
 import { getLimits } from "../../lib/plans.js";
-import { sendWorkspaceInviteEmail } from "../../lib/mailer.js";
 
 const membersRoutes: FastifyPluginAsync = async (fastify) => {
   const auth       = { preHandler: [fastify.authenticate] };
@@ -117,40 +116,16 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
           .from("profiles")
           .upsert({ id: userId, name, email }, { onConflict: "id" });
       } else {
-        /* Usuário confirmado — gera magic link e envia email de convite */
+        /* Usuário confirmado — envia magic link via Supabase (mesmo SMTP do reset/convite) */
         userId = existingProfile.id;
 
-        const { data: { user: inviter } } = await supabaseAdmin.auth.admin.getUserById(req.user.id);
-        const { data: inviterProfile }    = await supabaseAdmin.from("profiles").select("name").eq("id", req.user.id).single();
-        const { data: wsData }            = await supabaseAdmin.from("workspaces").select("name").eq("id", workspace_id).single();
-
-        const inviterName    = inviterProfile?.name ?? inviter?.email ?? "Alguém";
-        const workspaceName  = wsData?.name ?? "um workspace";
-        const acceptRedirect = `${siteUrl}/aceitar-convite?workspace_id=${workspace_id}`;
-
-        const { data: linkData, error: linkErr } = await supabaseAdmin.auth.admin.generateLink({
-          type:    "magiclink",
+        await supabaseAdmin.auth.signInWithOtp({
           email,
-          options: { redirectTo: acceptRedirect },
+          options: {
+            shouldCreateUser:  false,
+            emailRedirectTo:   `${siteUrl}/aceitar-convite?workspace_id=${workspace_id}`,
+          },
         });
-
-        console.log("[invite] generateLink error:", linkErr);
-        console.log("[invite] action_link:", linkData?.properties?.action_link ? "OK" : "MISSING");
-        console.log("[invite] SMTP_USER configured:", !!process.env.SMTP_USER);
-
-        if (!linkErr && linkData?.properties?.action_link) {
-          void sendWorkspaceInviteEmail({
-            to:            email,
-            toName:        name ?? email,
-            workspaceName,
-            inviterName,
-            acceptLink:    linkData.properties.action_link,
-          }).then(() => {
-            console.log("[invite] email sent OK to", email);
-          }).catch((err) => {
-            console.error("[invite] email error:", err?.message ?? err);
-          });
-        }
       }
     } else {
       /* Usuário novo — cria conta e envia email de convite */
