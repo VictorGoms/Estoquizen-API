@@ -3,7 +3,7 @@
  * Fonte única de verdade — alterar aqui reflete em todas as validações.
  */
 
-export type Plan = "basic" | "intermediate" | "pro";
+export type Plan = "basic" | "growth" | "pro";
 
 interface PlanLimits {
   label:        string;
@@ -16,24 +16,24 @@ interface PlanLimits {
 export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
   basic: {
     label:        "Basic",
-    products:     150,
+    products:     50,
     members:      3,
     dailyInvites: 10,
-    price:        39,
+    price:        19.90,
   },
-  intermediate: {
+  growth: {
     label:        "Growth",
-    products:     500,
+    products:     300,
     members:      7,
     dailyInvites: 25,
-    price:        69,
+    price:        29.90,
   },
   pro: {
     label:        "Pro",
     products:     2000,
     members:      12,
     dailyInvites: 50,
-    price:        129,
+    price:        59.90,
   },
 };
 

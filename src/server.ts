@@ -7,8 +7,9 @@ import rateLimit  from "@fastify/rate-limit";
 import swagger    from "@fastify/swagger";
 import swaggerUi  from "@fastify/swagger-ui";
 
-import authPlugin from "./plugins/auth.js";
-import v1Routes  from "./routes/v1/index.js";
+import authPlugin    from "./plugins/auth.js";
+import v1Routes     from "./routes/v1/index.js";
+import webhookRoutes from "./routes/webhooks.js";
 
 const PORT   = Number(process.env.PORT ?? 3001);
 const IS_DEV = process.env.NODE_ENV !== "production";
@@ -20,6 +21,16 @@ const fastify = Fastify({
       ? { target: "pino-pretty", options: { colorize: true } }
       : undefined,
   },
+});
+
+/* ── Raw body — necessário para validar assinatura do webhook Stripe ── */
+fastify.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
+  (req as unknown as Record<string, unknown>).rawBody = body;
+  try {
+    done(null, JSON.parse((body as Buffer).toString()));
+  } catch {
+    done(new Error("Invalid JSON"));
+  }
 });
 
 /* ── Plugins de segurança ── */
@@ -88,7 +99,8 @@ await fastify.register(swaggerUi, {
 await fastify.register(authPlugin);
 
 /* ── Rotas ── */
-await fastify.register(v1Routes, { prefix: "/api/v1" });
+await fastify.register(v1Routes,     { prefix: "/api/v1" });
+await fastify.register(webhookRoutes);
 
 /* ── Start ── */
 try {

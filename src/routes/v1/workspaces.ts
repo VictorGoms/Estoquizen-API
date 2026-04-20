@@ -39,12 +39,11 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send(ok({ produtos: produtos ?? 0, alertas: alertas ?? 0, movimentacoes: movimentacoes ?? 0 }));
   });
 
-  /* POST /workspaces — cria workspace e define o criador como owner */
+  /* POST /workspaces — cria workspace, owner e subscription de trial */
   fastify.post("/workspaces", authStrict, async (req, reply) => {
     const parsed = CreateWorkspaceSchema.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
 
-    /* Usa service role para criar workspace (operação privilegiada) */
     const { data: ws, error: wsErr } = await supabaseAdmin
       .from("workspaces")
       .insert({ ...parsed.data, created_by: req.user.id })
@@ -53,12 +52,22 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (wsErr) return reply.status(500).send(fail(dbError(wsErr)));
 
-    /* Adiciona criador como owner */
     const { error: memberErr } = await supabaseAdmin
       .from("workspace_members")
       .insert({ workspace_id: ws.id, user_id: req.user.id, role: "owner", status: "ativo" });
 
     if (memberErr) return reply.status(500).send(fail(dbError(memberErr)));
+
+    /* Trial de 30 dias para workspaces criados antes de 2026-06-30, 14 dias após */
+    const trialDays = new Date(ws.created_at) < new Date("2026-06-30") ? 30 : 14;
+    const trialEndsAt = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toISOString();
+
+    await supabaseAdmin.from("subscriptions").insert({
+      workspace_id:  ws.id,
+      plan:          parsed.data.plan ?? "basic",
+      status:        "trialing",
+      trial_ends_at: trialEndsAt,
+    });
 
     return reply.status(201).send(ok(ws));
   });

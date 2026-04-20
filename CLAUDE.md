@@ -210,9 +210,9 @@ SMTP_PASS=sua_app_password_16_chars
 ### Nomes dos planos (BREAKING CHANGE em relação ao código atual)
 | Slug no banco | Label | Preço | Produtos | Membros |
 |---|---|---|---|---|
-| `basic` | Basic | R$39/mês | 150 | 3 |
-| `growth` | Growth | R$69/mês | 500 | 7 |
-| `pro` | Pro | R$129/mês | 2000 | 12 |
+| `basic` | Basic | R$19,90/mês | 50 | 3 |
+| `growth` | Growth | R$29,90/mês | 300 | 7 |
+| `pro` | Pro | R$59,90/mês | 2000 | 12 |
 
 **ATENÇÃO**: o slug `intermediate` que existe hoje no banco e em `plans.ts` deve ser renomeado para `growth` em toda a codebase. Isso inclui:
 - `database/schema.sql` — check constraint na tabela `workspaces`
