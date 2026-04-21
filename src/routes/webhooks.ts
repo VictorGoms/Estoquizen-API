@@ -20,6 +20,32 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
 
     try {
       switch (event.type) {
+
+        /* Mais confiável para a primeira cobrança — metadata direto na session */
+        case "checkout.session.completed": {
+          const session = event.data.object as Stripe.Checkout.Session;
+          const wsId = session.metadata?.workspace_id;
+          const plan = (session.metadata?.plan ?? "basic") as string;
+          if (!wsId || session.payment_status !== "paid") break;
+
+          const subId     = typeof session.subscription === "string" ? session.subscription : (session.subscription as any)?.id;
+          const custId    = typeof session.customer     === "string" ? session.customer     : (session.customer as any)?.id;
+
+          const updatePayload: Record<string, unknown> = {
+            status:            "active",
+            plan,
+            stripe_customer_id: custId ?? undefined,
+            updated_at:         new Date().toISOString(),
+          };
+          if (subId) updatePayload.stripe_subscription_id = subId;
+
+          await supabaseAdmin.from("subscriptions").update(updatePayload).eq("workspace_id", wsId);
+          await supabaseAdmin.from("workspaces").update({ plan, updated_at: new Date().toISOString() }).eq("id", wsId);
+
+          fastify.log.info({ wsId, plan, subId }, "checkout.session.completed → assinatura ativada");
+          break;
+        }
+
         case "invoice.paid": {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const invoice = event.data.object as any;
@@ -37,6 +63,7 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
             stripe_subscription_id: subId,
             stripe_customer_id:     typeof invoice.customer === "string" ? invoice.customer : invoice.customer?.id,
             stripe_price_id:        sub.items.data[0]?.price.id,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             current_period_end:     new Date((sub as any).current_period_end * 1000).toISOString(),
             updated_at:             new Date().toISOString(),
           }).eq("workspace_id", wsId);
@@ -45,6 +72,8 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
             plan,
             updated_at: new Date().toISOString(),
           }).eq("id", wsId);
+
+          fastify.log.info({ wsId, plan, subId }, "invoice.paid → assinatura ativada");
           break;
         }
 
