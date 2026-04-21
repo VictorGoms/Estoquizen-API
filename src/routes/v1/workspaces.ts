@@ -59,14 +59,19 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (memberErr) return reply.status(500).send(fail(dbError(memberErr)));
 
-    /* Trial de 30 dias para workspaces criados antes de 2026-06-30, 14 dias após */
-    const trialDays = new Date(ws.created_at) < new Date("2026-06-30") ? 30 : 14;
-    const trialEndsAt = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toISOString();
+    /* Apenas o plano growth tem trial gratuito — basic e pro exigem pagamento imediato */
+    const plan     = parsed.data.plan ?? "basic";
+    const hasTrial = plan === "growth";
+
+    const trialDays   = new Date(ws.created_at) < new Date("2026-06-30") ? 30 : 14;
+    const trialEndsAt = hasTrial
+      ? new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toISOString()
+      : null;
 
     await supabaseAdmin.from("subscriptions").insert({
       workspace_id:  ws.id,
-      plan:          parsed.data.plan ?? "basic",
-      status:        "trialing",
+      plan,
+      status:        hasTrial ? "trialing" : "trial_expired",
       trial_ends_at: trialEndsAt,
     });
 

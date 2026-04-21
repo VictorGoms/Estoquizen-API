@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { sanitizeText } from "../lib/sanitize.js";
 
-export const PLANS = ["basic", "intermediate", "pro"] as const;
+export const PLANS = ["basic", "growth", "pro"] as const;
 export type Plan = (typeof PLANS)[number];
 
 export const CreateWorkspaceSchema = z.object({
