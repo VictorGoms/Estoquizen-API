@@ -7,10 +7,12 @@ import rateLimit  from "@fastify/rate-limit";
 import swagger    from "@fastify/swagger";
 import swaggerUi  from "@fastify/swagger-ui";
 
+import cron          from "node-cron";
 import authPlugin    from "./plugins/auth.js";
 import v1Routes      from "./routes/v1/index.js";
 import webhookRoutes from "./routes/webhooks.js";
 import cleanupRoutes from "./routes/admin/cleanup.js";
+import { runCleanup } from "./lib/cleanup.js";
 
 const PORT   = Number(process.env.PORT ?? 3001);
 const IS_DEV = process.env.NODE_ENV !== "production";
@@ -103,6 +105,11 @@ await fastify.register(authPlugin);
 await fastify.register(v1Routes,      { prefix: "/api/v1" });
 await fastify.register(webhookRoutes);
 await fastify.register(cleanupRoutes);
+
+/* ── Cron: limpeza de workspaces expirados (todo dia às 4h UTC) ── */
+cron.schedule("0 4 * * *", () => {
+  runCleanup().catch((err) => fastify.log.error(err, "Erro no cleanup job"));
+});
 
 /* ── Start ── */
 try {
