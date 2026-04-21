@@ -3,6 +3,7 @@ import { InviteMemberSchema, UpdateMemberSchema } from "../../schemas/member.sch
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { ok, fail, dbError } from "../../lib/response.js";
 import { getLimits } from "../../lib/plans.js";
+import { assertActiveSubscription } from "../../lib/checkSubscription.js";
 
 const membersRoutes: FastifyPluginAsync = async (fastify) => {
   const auth       = { preHandler: [fastify.authenticate] };
@@ -48,6 +49,8 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
 
     const { email: rawEmail, name, role, workspace_id } = parsed.data;
     const email = rawEmail.toLowerCase().trim();
+
+    if (!await assertActiveSubscription(workspace_id, reply)) return;
 
     /* ── Validação de limite do plano ── */
     const { data: ws } = await supabaseAdmin

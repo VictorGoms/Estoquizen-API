@@ -3,6 +3,7 @@ import { CreateProductSchema, UpdateProductSchema, AdjustQtySchema } from "../..
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { ok, fail, dbError } from "../../lib/response.js";
 import { getLimits } from "../../lib/plans.js";
+import { assertActiveSubscription, getProductWorkspaceId } from "../../lib/checkSubscription.js";
 
 const productsRoutes: FastifyPluginAsync = async (fastify) => {
   const auth      = { preHandler: [fastify.authenticate] };
@@ -46,6 +47,8 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post("/products", authWrite, async (req, reply) => {
     const parsed = CreateProductSchema.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
+
+    if (!await assertActiveSubscription(parsed.data.workspace_id, reply)) return;
 
     const token = req.headers.authorization!.slice(7);
     const db    = supabaseForUser(token);
@@ -102,6 +105,9 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
     const parsed = UpdateProductSchema.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
 
+    const wsId = await getProductWorkspaceId(id);
+    if (wsId && !await assertActiveSubscription(wsId, reply)) return;
+
     const token = req.headers.authorization!.slice(7);
     const db    = supabaseForUser(token);
 
@@ -121,6 +127,9 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
     const { id } = req.params as { id: string };
     const parsed = AdjustQtySchema.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
+
+    const wsId = await getProductWorkspaceId(id);
+    if (wsId && !await assertActiveSubscription(wsId, reply)) return;
 
     const token = req.headers.authorization!.slice(7);
     const db    = supabaseForUser(token);
@@ -167,6 +176,10 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
   /* DELETE /products/:id */
   fastify.delete("/products/:id", authWrite, async (req, reply) => {
     const { id } = req.params as { id: string };
+
+    const wsId = await getProductWorkspaceId(id);
+    if (wsId && !await assertActiveSubscription(wsId, reply)) return;
+
     const token  = req.headers.authorization!.slice(7);
     const db     = supabaseForUser(token);
 

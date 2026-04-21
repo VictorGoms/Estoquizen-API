@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { CreateWorkspaceSchema, UpdateWorkspaceSchema } from "../../schemas/workspace.schema.js";
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { ok, fail, dbError } from "../../lib/response.js";
+import { assertActiveSubscription } from "../../lib/checkSubscription.js";
 
 const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
   const auth       = { preHandler: [fastify.authenticate] };
@@ -77,6 +78,8 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
     const { id } = req.params as { id: string };
     const parsed = UpdateWorkspaceSchema.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
+
+    if (!await assertActiveSubscription(id, reply)) return;
 
     const token = req.headers.authorization!.slice(7);
     const db    = supabaseForUser(token);
