@@ -12,6 +12,12 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rawBody = (req as any).rawBody as Buffer | string | undefined;
+      fastify.log.warn({ // DEBUG TEMPORÁRIO
+        rawBodyExists: !!rawBody,
+        rawBodyLength: rawBody ? (rawBody as Buffer).length : 0,
+        secretFirst10: secret.substring(0, 10),
+        sigFirst30: sig?.substring(0, 30),
+      }, "[DEBUG] webhook handler");
       if (!rawBody) return reply.status(400).send({ error: "Raw body não disponível" });
       event = stripe.webhooks.constructEvent(rawBody, sig, secret);
     } catch (err) {
