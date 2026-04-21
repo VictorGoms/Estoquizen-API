@@ -1,6 +1,6 @@
 import "dotenv/config";
 import Fastify from "fastify";
-import { Readable } from "node:stream";
+import { PassThrough } from "node:stream";
 import cors       from "@fastify/cors";
 import helmet     from "@fastify/helmet";
 import sensible   from "@fastify/sensible";
@@ -36,7 +36,10 @@ fastify.addHook("preParsing", async function (request, _reply, payload) {
   const raw = Buffer.concat(chunks);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (request as any).rawBody = raw;
-  return Readable.from(raw); // devolve stream novo para o body parser do Fastify
+  // PassThrough emite o buffer como chunk único — Readable.from(Buffer) itera bytes
+  const pt = new PassThrough();
+  pt.end(raw);
+  return pt;
 });
 
 /* ── Plugins de segurança ── */
