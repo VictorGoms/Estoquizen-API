@@ -214,10 +214,7 @@ SMTP_PASS=sua_app_password_16_chars
 | `growth` | Growth | R$29,90/mês | 300 | 7 |
 | `pro` | Pro | R$59,90/mês | 2000 | 12 |
 
-**ATENÇÃO**: o slug `intermediate` que existe hoje no banco e em `plans.ts` deve ser renomeado para `growth` em toda a codebase. Isso inclui:
-- `database/schema.sql` — check constraint na tabela `workspaces`
-- `src/lib/plans.ts` — chave do objeto `PLAN_LIMITS`
-- Supabase Dashboard — alterar o check constraint via migration SQL
+O slug `intermediate` foi renomeado para `growth` em toda a codebase. Constraint e dados já atualizados no Supabase.
 
 ### Modelo de trial (sem cartão upfront)
 - Usuário escolhe plano → cria workspace → **trial começa sem pedir cartão**
@@ -325,19 +322,25 @@ POST /webhooks/stripe           — recebe eventos do Stripe
 - Continua com acesso até o fim do ciclo pago
 - No fim do ciclo, Stripe emite `customer.subscription.deleted` → webhook muda para `status = canceled`
 
-### Job agendado (deleção de workspaces)
-- Roda **diariamente**
-- Busca workspaces com `subscriptions.status IN ('trial_expired', 'canceled')` E `updated_at < now() - interval '30 days'`
-- Envia email de aviso 16 dias antes de deletar
-- Pode ser implementado como: cron no servidor, Supabase Edge Function agendada, ou pg_cron
+### Job agendado (deleção de workspaces) — `src/lib/cleanup.ts`
+- Roda **todo dia às 4h UTC** via `node-cron` dentro do processo Node.js (sem serviço externo)
+- Agendado em `server.ts` com `cron.schedule("0 4 * * *", () => runCleanup())`
+- Fluxo em ordem:
+  1. `trialing` + `trial_ends_at < now()` → atualiza para `trial_expired`
+  2. `trial_expired` ou `canceled` + 14+ dias → envia email de aviso via Resend
+  3. `trial_expired` ou `canceled` + 30+ dias → deleta workspace (cascade) + email de confirmação
+- Emails via **Resend** (`src/lib/resend.ts`) — HTTP, sem SMTP bloqueado no Railway
+- Endpoint manual `POST /admin/cleanup` (protegido por `CRON_SECRET`) para forçar execução
 
-### Variáveis de ambiente adicionais (a acrescentar no `.env`)
+### Variáveis de ambiente adicionais
 ```
 STRIPE_SECRET_KEY=sk_test_...          # chave secreta do Stripe (test mode)
 STRIPE_WEBHOOK_SECRET=whsec_...        # obtido com: stripe listen --forward-to ...
 STRIPE_PRICE_BASIC=price_...           # ID do Price no Stripe Dashboard
 STRIPE_PRICE_GROWTH=price_...
 STRIPE_PRICE_PRO=price_...
+RESEND_API_KEY=re_...                  # Resend — emails de aviso/deleção (adicionado no Railway)
+CRON_SECRET=...                        # segredo para chamar POST /admin/cleanup manualmente
 ```
 
 ### Ordem de implementação — status em 2026-04-20
@@ -367,17 +370,26 @@ STRIPE_PRICE_PRO=price_...
     drop function if exists public.create_workspace(text, text);
     ```
 11. Webhook cadastrado no Stripe Dashboard (modo test) apontando para Railway — **feito**
-12. Env vars no Railway: `STRIPE_SECRET_KEY`, `STRIPE_PRICE_*`, `STRIPE_WEBHOOK_SECRET` — **feitas**
+12. Env vars no Railway: `STRIPE_SECRET_KEY`, `STRIPE_PRICE_*`, `STRIPE_WEBHOOK_SECRET`, `RESEND_API_KEY` — **feitas**
+13. Middleware de verificação de assinatura — **feito** (`src/lib/checkSubscription.ts`)
+    - `assertActiveSubscription()` bloqueia com 403 quando `trial_expired`, `canceled` ou `deleted`
+    - Aplicado em: `POST/PATCH/DELETE /products`, `POST /products/:id/adjust`, `POST /members/invite`, `PATCH /workspaces/:id`
+14. Job de limpeza de workspaces expirados — **feito** (`src/lib/cleanup.ts`)
+    - `node-cron` roda `runCleanup()` todo dia às 4h UTC dentro do processo Node.js
+    - Transiciona `trialing` → `trial_expired` quando `trial_ends_at` passa
+    - Aviso por email no dia 14, deleção no dia 30 (via Resend)
+    - Endpoint manual `POST /admin/cleanup` protegido por `CRON_SECRET`
 
 #### 🔜 Pendente
-- Implementar middleware de verificação de assinatura (bloqueia rotas mutáveis quando `trial_expired` ou `canceled`)
-- Implementar job de deleção de workspaces expirados (Railway Cron Job + Resend para emails de aviso)
+- Nenhum pendente no backend
 
 ### ✅ RPC `invite_member` — substituída pela rota da API
 
-O convite de membros passou a ser gerenciado inteiramente pela rota `POST /members/invite` no Railway,
-que trata os três casos (novo, não-confirmado, confirmado) e envia emails via nodemailer quando necessário.
-Não há mais dependência de Edge Function ou RPC para o fluxo de convite.
+O convite de membros é gerenciado inteiramente pela rota `POST /members/invite` no Railway:
+- Usuário novo → `inviteUserByEmail` (Supabase envia email)
+- Usuário não confirmado → deleta + re-convida
+- Usuário confirmado → `signInWithOtp` (magic link via Supabase, sem nodemailer)
+Não há dependência de Edge Function ou RPC para o fluxo de convite.
 
 ### ✅ RPCs permanentes no Supabase
 - `accept_workspace_invite()` — chamada pelo frontend em `/set-password` após definir senha
