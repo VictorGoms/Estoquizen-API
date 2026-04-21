@@ -47,9 +47,11 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
     const parsed = CreateWorkspaceSchema.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
 
+    const { cpf: cpfRawInput, ...workspaceFields } = parsed.data;
+
     const { data: ws, error: wsErr } = await supabaseAdmin
       .from("workspaces")
-      .insert({ ...parsed.data, created_by: req.user.id })
+      .insert({ ...workspaceFields, created_by: req.user.id })
       .select()
       .single();
 
@@ -62,7 +64,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
     if (memberErr) return reply.status(500).send(fail(dbError(memberErr)));
 
     /* Valida e salva CPF — obrigatório para todos os planos */
-    const cpfRaw = parsed.data.cpf ?? "";
+    const cpfRaw = cpfRawInput ?? "";
     const cpf    = sanitizeCpf(cpfRaw);
     if (!cpf) {
       return reply.status(400).send(fail("CPF inválido. Informe um CPF válido para continuar."));
