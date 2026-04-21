@@ -1,12 +1,12 @@
 import "dotenv/config";
 import Fastify from "fastify";
+import { Readable } from "node:stream";
 import cors       from "@fastify/cors";
 import helmet     from "@fastify/helmet";
 import sensible   from "@fastify/sensible";
 import rateLimit  from "@fastify/rate-limit";
 import swagger    from "@fastify/swagger";
 import swaggerUi  from "@fastify/swagger-ui";
-import rawBodyPlugin from "fastify-raw-body";
 
 import cron          from "node-cron";
 import authPlugin    from "./plugins/auth.js";
@@ -28,11 +28,15 @@ const fastify = Fastify({
 });
 
 /* ── Raw body — necessário para validar assinatura do webhook Stripe ── */
-await fastify.register(rawBodyPlugin, {
-  field:    "rawBody",
-  global:   true,
-  encoding: false, // mantém como Buffer
-  runFirst: true,
+fastify.addHook("preParsing", async function (request, _reply, payload) {
+  const chunks: Buffer[] = [];
+  for await (const chunk of payload) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+  }
+  const raw = Buffer.concat(chunks);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (request as any).rawBody = raw;
+  return Readable.from(raw); // devolve stream novo para o body parser do Fastify
 });
 
 /* ── Plugins de segurança ── */
