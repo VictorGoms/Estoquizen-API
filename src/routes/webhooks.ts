@@ -10,11 +10,13 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
 
     let event: Stripe.Event;
     try {
-      const rawBody = (req as { rawBody?: Buffer }).rawBody;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rawBody = (req as any).rawBody as Buffer | string | undefined;
       if (!rawBody) return reply.status(400).send({ error: "Raw body não disponível" });
       event = stripe.webhooks.constructEvent(rawBody, sig, secret);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      fastify.log.error({ msg }, "Webhook Stripe: falha na verificação");
       return reply.status(400).send({ error: `Webhook Error: ${msg}` });
     }
 

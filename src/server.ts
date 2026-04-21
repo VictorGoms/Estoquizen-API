@@ -6,6 +6,7 @@ import sensible   from "@fastify/sensible";
 import rateLimit  from "@fastify/rate-limit";
 import swagger    from "@fastify/swagger";
 import swaggerUi  from "@fastify/swagger-ui";
+import rawBodyPlugin from "fastify-raw-body";
 
 import cron          from "node-cron";
 import authPlugin    from "./plugins/auth.js";
@@ -27,13 +28,11 @@ const fastify = Fastify({
 });
 
 /* ── Raw body — necessário para validar assinatura do webhook Stripe ── */
-fastify.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
-  (req as unknown as Record<string, unknown>).rawBody = body;
-  try {
-    done(null, JSON.parse((body as Buffer).toString()));
-  } catch {
-    done(new Error("Invalid JSON"));
-  }
+await fastify.register(rawBodyPlugin, {
+  field:    "rawBody",
+  global:   true,
+  encoding: false, // mantém como Buffer
+  runFirst: true,
 });
 
 /* ── Plugins de segurança ── */
