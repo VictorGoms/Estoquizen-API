@@ -8,6 +8,7 @@ export const CreateWorkspaceSchema = z.object({
   name:        z.string().transform((v) => sanitizeText(v, 100)).pipe(z.string().min(2, "Nome deve ter ao menos 2 caracteres")),
   description: z.string().transform((v) => sanitizeText(v, 300)).optional(),
   plan:        z.enum(PLANS).default("basic"),
+  cpf:         z.string().optional(),
 });
 
 export const UpdateWorkspaceSchema = z.object({

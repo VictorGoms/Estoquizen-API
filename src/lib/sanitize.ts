@@ -35,3 +35,21 @@ export function sanitizeNumber(value: unknown): string {
 export function sanitizeEmail(value: unknown): string {
   return sanitizeText(value, 254).toLowerCase();
 }
+
+/** Remove formatação do CPF e valida dígitos verificadores. Retorna apenas dígitos ou null se inválido. */
+export function sanitizeCpf(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const digits = value.replace(/\D/g, "");
+  if (digits.length !== 11) return null;
+  if (/^(\d)\1{10}$/.test(digits)) return null; // sequências repetidas (111.111.111-11 etc.)
+
+  const calc = (len: number) => {
+    let sum = 0;
+    for (let i = 0; i < len; i++) sum += Number(digits[i]) * (len + 1 - i);
+    const rem = (sum * 10) % 11;
+    return rem === 10 || rem === 11 ? 0 : rem;
+  };
+  if (calc(9) !== Number(digits[9])) return null;
+  if (calc(10) !== Number(digits[10])) return null;
+  return digits;
+}

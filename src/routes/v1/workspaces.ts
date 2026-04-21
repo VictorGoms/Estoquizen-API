@@ -3,6 +3,7 @@ import { CreateWorkspaceSchema, UpdateWorkspaceSchema } from "../../schemas/work
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { ok, fail, dbError } from "../../lib/response.js";
 import { assertActiveSubscription } from "../../lib/checkSubscription.js";
+import { sanitizeCpf } from "../../lib/sanitize.js";
 
 const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
   const auth       = { preHandler: [fastify.authenticate] };
@@ -60,8 +61,43 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
     if (memberErr) return reply.status(500).send(fail(dbError(memberErr)));
 
     /* Apenas o plano growth tem trial gratuito — basic e pro exigem pagamento imediato */
-    const plan     = parsed.data.plan ?? "basic";
-    const hasTrial = plan === "growth";
+    const plan = parsed.data.plan ?? "basic";
+    let hasTrial = plan === "growth";
+
+    if (hasTrial) {
+      /* Valida CPF — obrigatório para o trial do Growth */
+      const cpfRaw = parsed.data.cpf ?? "";
+      const cpf    = sanitizeCpf(cpfRaw);
+      if (!cpf) {
+        return reply.status(400).send(fail("CPF inválido. Informe um CPF válido para ativar o trial gratuito."));
+      }
+
+      /* Verifica se este CPF já usou um trial em qualquer workspace */
+      const { data: existingCpf } = await supabaseAdmin
+        .from("profiles")
+        .select("id")
+        .eq("cpf", cpf)
+        .maybeSingle();
+
+      if (existingCpf) {
+        /* CPF já cadastrado — verifica se o usuário associado já teve trial */
+        const { data: previousSub } = await supabaseAdmin
+          .from("workspace_members")
+          .select("workspace_id, subscriptions!inner(status)")
+          .eq("user_id", existingCpf.id)
+          .eq("role", "owner")
+          .maybeSingle();
+
+        if (previousSub) hasTrial = false; // já usou o trial
+      }
+
+      /* Salva CPF no perfil do usuário atual (se ainda não tiver) */
+      await supabaseAdmin
+        .from("profiles")
+        .update({ cpf })
+        .eq("id", req.user.id)
+        .is("cpf", null); // só atualiza se ainda não tiver CPF salvo
+    }
 
     const trialDays   = new Date(ws.created_at) < new Date("2026-06-30") ? 30 : 14;
     const trialEndsAt = hasTrial
