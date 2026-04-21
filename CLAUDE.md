@@ -340,63 +340,38 @@ STRIPE_PRICE_GROWTH=price_...
 STRIPE_PRICE_PRO=price_...
 ```
 
-### Ordem de implementação recomendada
-1. Renomear `intermediate` → `growth` no banco e em `plans.ts`
-2. Criar tabela `subscriptions` no Supabase
-3. Alterar `POST /workspaces` para inserir em `subscriptions` com `status=trialing` ao criar workspace
-4. Criar middleware de verificação de assinatura (lê `subscriptions.status` antes de rotas mutáveis)
-5. Instalar `stripe` npm package
-6. Criar `src/lib/stripe.ts` com o client Stripe
-7. Criar `src/routes/v1/billing.ts` com as rotas de billing
-8. Implementar o webhook `/webhooks/stripe` com validação de assinatura
-9. Implementar o job de deleção de workspaces expirados
+### Ordem de implementação — status em 2026-04-20
 
-### ⚠️ Políticas RLS temporárias — remover ao implementar billing
+#### ✅ Concluído
+1. Renomear `intermediate` → `growth` no banco e em `plans.ts` — **feito**
+   - SQL: `update workspaces set plan='growth' where plan='intermediate'`
+   - Constraint atualizado para `check (plan in ('basic','growth','pro'))`
+   - `src/lib/plans.ts`: preços R$19,90 / R$29,90 / R$59,90, limites 50 / 300 / 2000 produtos
+2. Criar tabela `subscriptions` no Supabase — **feita**
+3. `POST /workspaces` cria subscription `trialing` automaticamente (30 dias antes de 2026-06-30) — **feito**
+4. Instalar `stripe` npm package — **feito**
+5. Criar `src/lib/stripe.ts` com o client Stripe — **feito**
+6. Criar `src/routes/v1/billing.ts` com as rotas de billing — **feito**
+   - `GET  /billing/subscription?workspace_id=xxx`
+   - `POST /billing/checkout` — cria Stripe Checkout Session
+   - `POST /billing/portal` — cria Customer Portal Session
+7. Implementar webhook `POST /webhooks/stripe` — **feito** (`src/routes/webhooks.ts`)
+   - Raw body capturado em `server.ts` via `addContentTypeParser`
+   - Eventos: `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated/deleted`
+8. Frontend: `plan-selection/page.tsx` usa `api.post("/workspaces")` em vez do RPC — **feito**
+9. Frontend: componente `TrialBanner` no dashboard — **feito** (`src/components/dashboard/TrialBanner.tsx`)
+10. Políticas RLS temporárias e RPC `create_workspace` removidos do Supabase — **feito**
+    ```sql
+    drop policy if exists "Usuário autenticado cria workspace" on public.workspaces;
+    drop policy if exists "Criador adiciona-se como owner" on public.workspace_members;
+    drop function if exists public.create_workspace(text, text);
+    ```
+11. Webhook cadastrado no Stripe Dashboard (modo test) apontando para Railway — **feito**
+12. Env vars no Railway: `STRIPE_SECRET_KEY`, `STRIPE_PRICE_*`, `STRIPE_WEBHOOK_SECRET` — **feitas**
 
-As políticas abaixo foram adicionadas **temporariamente** para permitir criação de workspace
-direto pelo frontend (sem Railway) enquanto o sistema de pagamento não existe.
-
-**Quando implementar o Stripe (passo 3 acima), estas políticas devem ser removidas**,
-pois a criação de workspace voltará a passar pelo Railway (`POST /workspaces`), que cria
-o registro de trial em `subscriptions`. Manter as políticas seria um risco: qualquer
-usuário autenticado poderia criar workspace sem passar pelo billing.
-
-SQL para remover quando chegar a hora:
-```sql
-drop policy if exists "Usuário autenticado cria workspace" on public.workspaces;
-drop policy if exists "Criador adiciona-se como owner"     on public.workspace_members;
-```
-
-E revertir `src/app/plan-selection/page.tsx` do frontend para usar `api.post("/workspaces", ...)`
-em vez das chamadas diretas ao Supabase.
-
-### ⚠️ RPC `create_workspace` — também remover ao implementar billing
-
-Durante os testes descobrimos que INSERT direto via PostgREST retorna 403 mesmo com JWT válido
-e políticas RLS corretas (comportamento inconsistente do Supabase com ES256 + RLS + INSERT).
-A solução foi criar uma função Postgres `SECURITY DEFINER`:
-
-```sql
--- Função temporária — criada em 2026-04-18, remover quando criar workspace voltar ao Railway
-create or replace function public.create_workspace(p_name text, p_plan text)
-returns json language plpgsql security definer set search_path = public as $$
-declare v_user_id uuid; v_workspace public.workspaces;
-begin
-  v_user_id := auth.uid();
-  if v_user_id is null then raise exception 'Not authenticated'; end if;
-  insert into public.workspaces (name, plan, created_by) values (p_name, p_plan, v_user_id) returning * into v_workspace;
-  insert into public.workspace_members (workspace_id, user_id, role, status) values (v_workspace.id, v_user_id, 'owner', 'ativo');
-  return row_to_json(v_workspace);
-end; $$;
-```
-
-O frontend chama via `supabase.rpc("create_workspace", { p_name, p_plan })`.
-
-**Quando implementar o Stripe**, a criação de workspace volta para o Railway (`POST /workspaces`),
-que também vai inserir em `subscriptions`. Nesse momento:
-1. Remover a função `create_workspace` do Supabase: `drop function public.create_workspace(text, text);`
-2. Revertir `plan-selection/page.tsx` para `api.post("/workspaces", ...)`
-3. Remover as políticas RLS temporárias listadas acima
+#### 🔜 Pendente
+- Implementar middleware de verificação de assinatura (bloqueia rotas mutáveis quando `trial_expired` ou `canceled`)
+- Implementar job de deleção de workspaces expirados (Railway Cron Job + Resend para emails de aviso)
 
 ### ✅ RPC `invite_member` — substituída pela rota da API
 
