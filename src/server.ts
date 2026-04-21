@@ -8,8 +8,9 @@ import swagger    from "@fastify/swagger";
 import swaggerUi  from "@fastify/swagger-ui";
 
 import authPlugin    from "./plugins/auth.js";
-import v1Routes     from "./routes/v1/index.js";
+import v1Routes      from "./routes/v1/index.js";
 import webhookRoutes from "./routes/webhooks.js";
+import cleanupRoutes from "./routes/admin/cleanup.js";
 
 const PORT   = Number(process.env.PORT ?? 3001);
 const IS_DEV = process.env.NODE_ENV !== "production";
@@ -99,8 +100,9 @@ await fastify.register(swaggerUi, {
 await fastify.register(authPlugin);
 
 /* ── Rotas ── */
-await fastify.register(v1Routes,     { prefix: "/api/v1" });
+await fastify.register(v1Routes,      { prefix: "/api/v1" });
 await fastify.register(webhookRoutes);
+await fastify.register(cleanupRoutes);
 
 /* ── Start ── */
 try {
