@@ -5,10 +5,19 @@ const EXPIRED_STATUSES  = ["trial_expired", "canceled"];
 const WARN_AFTER_DAYS   = 14;
 const DELETE_AFTER_DAYS = 30;
 
-export async function runCleanup(): Promise<{ deleted: number; warned: number; deleteErrors: string[] }> {
+export async function runCleanup(): Promise<{ expired: number; deleted: number; warned: number; deleteErrors: string[] }> {
   const now          = new Date();
   const warnCutoff   = new Date(now.getTime() - WARN_AFTER_DAYS   * 24 * 60 * 60 * 1000).toISOString();
   const deleteCutoff = new Date(now.getTime() - DELETE_AFTER_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
+  /* ── 0. Transicionar trialing → trial_expired quando trial_ends_at passou ── */
+  const { data: expiredRows } = await supabaseAdmin
+    .from("subscriptions")
+    .update({ status: "trial_expired", updated_at: now.toISOString() })
+    .eq("status", "trialing")
+    .lt("trial_ends_at", now.toISOString())
+    .select("id");
+  const expired = expiredRows?.length ?? 0;
 
   /* ── 1. Deletar workspaces expirados há 30+ dias ── */
   const { data: toDelete } = await supabaseAdmin
@@ -79,5 +88,5 @@ export async function runCleanup(): Promise<{ deleted: number; warned: number; d
     warned++;
   }
 
-  return { deleted, warned, deleteErrors };
+  return { expired: expired ?? 0, deleted, warned, deleteErrors };
 }
