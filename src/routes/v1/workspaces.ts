@@ -4,6 +4,7 @@ import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { ok, fail, dbError } from "../../lib/response.js";
 import { assertActiveSubscription } from "../../lib/checkSubscription.js";
 import { sanitizeCpf } from "../../lib/sanitize.js";
+import { stripe } from "../../lib/stripe.js";
 
 const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
   const auth       = { preHandler: [fastify.authenticate] };
@@ -168,7 +169,22 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(403).send(fail("Apenas o owner pode encerrar a assinatura."));
     }
 
-    /* 2. Deleta em cascata via service role
+    /* 2. Cancela assinatura no Stripe se houver */
+    const { data: sub } = await supabaseAdmin
+      .from("subscriptions")
+      .select("stripe_subscription_id")
+      .eq("workspace_id", id)
+      .maybeSingle();
+
+    if (sub?.stripe_subscription_id) {
+      try {
+        await stripe.subscriptions.cancel(sub.stripe_subscription_id);
+      } catch (err) {
+        fastify.log.warn(err, "Falha ao cancelar assinatura no Stripe (prosseguindo com deleção)");
+      }
+    }
+
+    /* 3. Deleta em cascata via service role
           A FK ON DELETE CASCADE cuida de:
             workspace_members → deletados pelo cascade do workspace
             products          → deletados pelo cascade do workspace
