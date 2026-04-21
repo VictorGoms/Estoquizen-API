@@ -67,8 +67,8 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
       customer:   customerId,
       mode:       "subscription",
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${siteUrl}/dashboard?checkout=success`,
-      cancel_url:  `${siteUrl}/dashboard?checkout=canceled`,
+      success_url: `${siteUrl}/select-workspace?checkout=success`,
+      cancel_url:  `${siteUrl}/select-workspace?checkout=canceled`,
       subscription_data: {
         metadata: { workspace_id, plan },
       },
