@@ -1,6 +1,5 @@
 import "dotenv/config";
 import Fastify from "fastify";
-import { PassThrough } from "node:stream";
 import cors       from "@fastify/cors";
 import helmet     from "@fastify/helmet";
 import sensible   from "@fastify/sensible";
@@ -28,18 +27,14 @@ const fastify = Fastify({
 });
 
 /* ── Raw body — necessário para validar assinatura do webhook Stripe ── */
-fastify.addHook("preParsing", async function (request, _reply, payload) {
-  const chunks: Buffer[] = [];
-  for await (const chunk of payload) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
-  }
-  const raw = Buffer.concat(chunks);
+fastify.addContentTypeParser("application/json", { parseAs: "buffer" }, function (req, body, done) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (request as any).rawBody = raw;
-  // PassThrough emite o buffer como chunk único — Readable.from(Buffer) itera bytes
-  const pt = new PassThrough();
-  pt.end(raw);
-  return pt;
+  (req as any).rawBody = body;
+  try {
+    done(null, JSON.parse((body as Buffer).toString("utf8")));
+  } catch {
+    done(new Error("Invalid JSON"));
+  }
 });
 
 /* ── Plugins de segurança ── */
