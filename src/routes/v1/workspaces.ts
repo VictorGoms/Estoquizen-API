@@ -60,43 +60,46 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (memberErr) return reply.status(500).send(fail(dbError(memberErr)));
 
+    /* Valida e salva CPF — obrigatório para todos os planos */
+    const cpfRaw = parsed.data.cpf ?? "";
+    const cpf    = sanitizeCpf(cpfRaw);
+    if (!cpf) {
+      return reply.status(400).send(fail("CPF inválido. Informe um CPF válido para continuar."));
+    }
+
+    /* Salva CPF no perfil (só na primeira vez — não sobrescreve) */
+    await supabaseAdmin
+      .from("profiles")
+      .update({ cpf })
+      .eq("id", req.user.id)
+      .is("cpf", null);
+
     /* Apenas o plano growth tem trial gratuito — basic e pro exigem pagamento imediato */
     const plan = parsed.data.plan ?? "basic";
     let hasTrial = plan === "growth";
 
     if (hasTrial) {
-      /* Valida CPF — obrigatório para o trial do Growth */
-      const cpfRaw = parsed.data.cpf ?? "";
-      const cpf    = sanitizeCpf(cpfRaw);
-      if (!cpf) {
-        return reply.status(400).send(fail("CPF inválido. Informe um CPF válido para ativar o trial gratuito."));
-      }
-
       /* Verifica se este CPF já usou um trial em qualquer workspace */
       const { data: existingCpf } = await supabaseAdmin
         .from("profiles")
         .select("id")
         .eq("cpf", cpf)
+        .neq("id", req.user.id) // ignora o próprio usuário
         .maybeSingle();
 
       if (existingCpf) {
-        /* CPF já cadastrado — verifica se o usuário associado já teve trial */
+        hasTrial = false; // CPF já cadastrado por outro usuário → sem trial
+      } else {
+        /* Verifica se o próprio usuário já teve trial em outro workspace */
         const { data: previousSub } = await supabaseAdmin
           .from("workspace_members")
           .select("workspace_id, subscriptions!inner(status)")
-          .eq("user_id", existingCpf.id)
+          .eq("user_id", req.user.id)
           .eq("role", "owner")
           .maybeSingle();
 
-        if (previousSub) hasTrial = false; // já usou o trial
+        if (previousSub) hasTrial = false;
       }
-
-      /* Salva CPF no perfil do usuário atual (se ainda não tiver) */
-      await supabaseAdmin
-        .from("profiles")
-        .update({ cpf })
-        .eq("id", req.user.id)
-        .is("cpf", null); // só atualiza se ainda não tiver CPF salvo
     }
 
     const trialDays   = new Date(ws.created_at) < new Date("2026-06-30") ? 30 : 14;
