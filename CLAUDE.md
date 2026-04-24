@@ -96,18 +96,26 @@ database/
 
 ## Planos — `src/lib/plans.ts`
 ```
-basic        → R$39/mês  → 150 produtos, 3 membros,  10 convites/dia
-intermediate → R$69/mês  → 500 produtos, 7 membros,  25 convites/dia  (label: "Growth")
-pro          → R$129/mês → 2000 produtos, 12 membros, 50 convites/dia
+basic  → R$19,90/mês → 50 produtos,   3 membros,  10 convites/dia
+growth → R$29,90/mês → 300 produtos,  7 membros,  25 convites/dia
+pro    → R$59,90/mês → 2000 produtos, 12 membros, 50 convites/dia
 ```
 Limites verificados no servidor em `POST /products` e `POST /members/invite`.
+O slug `intermediate` foi renomeado para `growth` — constraint e dados já atualizados no Supabase.
 
 ## Tabelas do Supabase
 - `workspaces`        — id, name, description, plan, created_by, created_at, updated_at
 - `workspace_members` — workspace_id, user_id, role (owner/admin/member), status (ativo/pendente), invited_by, created_at
-- `profiles`          — id (= auth.uid), name, email, phone, avatar_color
+- `profiles`          — id (= auth.uid), name, email, phone, avatar_color, cpf (unique, nullable)
 - `products`          — id, workspace_id, name, code (NOT NULL), category, unit, price, qty, min_qty, max_qty, location, supplier, image_url, nota_fiscal, created_by, created_at, updated_at
 - `movements`         — id, product_id, delta, reason, created_by, created_at
+- `subscriptions`     — id, workspace_id, plan, status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_subscription_id, stripe_price_id, created_at, updated_at
+
+```sql
+-- CPF no perfil (rodar no Supabase SQL Editor se ainda não existir)
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS cpf TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS profiles_cpf_unique ON public.profiles (cpf) WHERE cpf IS NOT NULL;
+```
 
 ### RPCs (funções Postgres)
 - `adjust_product_qty(p_product_id, p_delta, p_reason, p_user_id)` — ajuste atômico de estoque + insert em movements
@@ -194,9 +202,7 @@ SMTP_PASS=sua_app_password_16_chars
 
 ---
 
-## Sistema de Assinaturas — Decisões de Arquitetura (a implementar)
-
-> Esta seção documenta todas as decisões tomadas em debate. Nada foi implementado ainda.
+## Sistema de Assinaturas — Implementado
 
 ### Plataforma
 - **Stripe** (não AbacatePay)
@@ -207,18 +213,18 @@ SMTP_PASS=sua_app_password_16_chars
 - **Por workspace** (não por usuário) — 1 workspace = 1 assinatura = 1 Stripe Customer
 - Se o usuário tiver múltiplos workspaces, cada um tem sua própria assinatura independente
 
-### Nomes dos planos (BREAKING CHANGE em relação ao código atual)
+### Planos
 | Slug no banco | Label | Preço | Produtos | Membros |
 |---|---|---|---|---|
 | `basic` | Basic | R$19,90/mês | 50 | 3 |
 | `growth` | Growth | R$29,90/mês | 300 | 7 |
 | `pro` | Pro | R$59,90/mês | 2000 | 12 |
 
-O slug `intermediate` foi renomeado para `growth` em toda a codebase. Constraint e dados já atualizados no Supabase.
-
-### Modelo de trial (sem cartão upfront)
-- Usuário escolhe plano → cria workspace → **trial começa sem pedir cartão**
-- O Stripe **não é criado ainda** durante o trial — a assinatura é puramente local no banco
+### Modelo de trial
+- **Apenas o plano `growth` tem trial gratuito** — `basic` e `pro` exigem pagamento imediato
+- Trial é **1 por CPF** — verificado via `profiles.cpf` (unique index); se CPF já foi usado em outro workspace, `hasTrial = false`
+- CPF é **obrigatório** para todos os planos na criação do workspace; salvo em `profiles.cpf` (só na primeira vez — não sobrescreve)
+- O Stripe **não é criado durante o trial** — a assinatura é puramente local no banco
 - O Stripe só entra quando o usuário decide pagar
 
 **Duração do trial:**
@@ -301,12 +307,14 @@ POST /webhooks/stripe           — recebe eventos do Stripe
 **CRÍTICO no webhook:**
 - Rota `/webhooks/stripe` **NÃO tem** `preHandler: [fastify.authenticate]` — o Stripe não envia JWT
 - Validar assinatura com `stripe.webhooks.constructEvent(rawBody, stripeSignatureHeader, STRIPE_WEBHOOK_SECRET)`
-- O `rawBody` deve ser o body **bruto** (antes do parse JSON) — Fastify tem hook `addContentTypeParser` para isso
-- **Nunca ativar assinatura pela success URL do Checkout** — sempre pelo webhook `invoice.paid`
+- O `rawBody` é capturado via `addContentTypeParser("application/json", { parseAs: "buffer" }, ...)` em `server.ts` — salvo em `(req as any).rawBody`
+- `STRIPE_WEBHOOK_SECRET` deve ser adicionada como variável no nível do **serviço** no Railway (não projeto) — se aparecer só no "raw editor JSON" mas não na lista normal, não está sendo injetada no processo
+- **Nunca ativar assinatura pela success URL do Checkout** — sempre pelo webhook
 
 ### Webhooks do Stripe a ouvir
 | Evento | Ação no backend |
 |---|---|
+| `checkout.session.completed` | `status = active` — mais confiável para a primeira cobrança, metadata direto na session |
 | `invoice.paid` | `status = active`, atualiza `current_period_end`, atualiza `workspaces.plan` |
 | `invoice.payment_failed` | `status = past_due` (não bloqueia ainda — Stripe vai retentar) |
 | `customer.subscription.updated` | Atualiza `plan`, `status`, `cancel_at_period_end`, `stripe_price_id` |
@@ -335,53 +343,40 @@ POST /webhooks/stripe           — recebe eventos do Stripe
 ### Variáveis de ambiente adicionais
 ```
 STRIPE_SECRET_KEY=sk_test_...          # chave secreta do Stripe (test mode)
-STRIPE_WEBHOOK_SECRET=whsec_...        # obtido com: stripe listen --forward-to ...
+STRIPE_WEBHOOK_SECRET=whsec_...        # segredo de assinatura do endpoint no Stripe Dashboard
 STRIPE_PRICE_BASIC=price_...           # ID do Price no Stripe Dashboard
 STRIPE_PRICE_GROWTH=price_...
 STRIPE_PRICE_PRO=price_...
-RESEND_API_KEY=re_...                  # Resend — emails de aviso/deleção (adicionado no Railway)
+RESEND_API_KEY=re_...                  # Resend — emails de aviso/deleção
 CRON_SECRET=...                        # segredo para chamar POST /admin/cleanup manualmente
 ```
 
-### Ordem de implementação — status em 2026-04-20
+> **ATENÇÃO Railway**: adicionar `STRIPE_WEBHOOK_SECRET` no nível do **serviço** (aba Variables do serviço), não do projeto. Se aparecer apenas no "raw editor JSON" mas não na lista normal de variáveis, o processo não está recebendo a var.
+
+### Status de implementação — 2026-04-23
 
 #### ✅ Concluído
-1. Renomear `intermediate` → `growth` no banco e em `plans.ts` — **feito**
-   - SQL: `update workspaces set plan='growth' where plan='intermediate'`
-   - Constraint atualizado para `check (plan in ('basic','growth','pro'))`
-   - `src/lib/plans.ts`: preços R$19,90 / R$29,90 / R$59,90, limites 50 / 300 / 2000 produtos
-2. Criar tabela `subscriptions` no Supabase — **feita**
-3. `POST /workspaces` cria subscription `trialing` automaticamente (30 dias antes de 2026-06-30) — **feito**
-4. Instalar `stripe` npm package — **feito**
-5. Criar `src/lib/stripe.ts` com o client Stripe — **feito**
-6. Criar `src/routes/v1/billing.ts` com as rotas de billing — **feito**
-   - `GET  /billing/subscription?workspace_id=xxx`
-   - `POST /billing/checkout` — cria Stripe Checkout Session
-   - `POST /billing/portal` — cria Customer Portal Session
-7. Implementar webhook `POST /webhooks/stripe` — **feito** (`src/routes/webhooks.ts`)
-   - Raw body capturado em `server.ts` via `addContentTypeParser`
-   - Eventos: `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated/deleted`
-8. Frontend: `plan-selection/page.tsx` usa `api.post("/workspaces")` em vez do RPC — **feito**
-9. Frontend: componente `TrialBanner` no dashboard — **feito** (`src/components/dashboard/TrialBanner.tsx`)
-10. Políticas RLS temporárias e RPC `create_workspace` removidos do Supabase — **feito**
-    ```sql
-    drop policy if exists "Usuário autenticado cria workspace" on public.workspaces;
-    drop policy if exists "Criador adiciona-se como owner" on public.workspace_members;
-    drop function if exists public.create_workspace(text, text);
-    ```
-11. Webhook cadastrado no Stripe Dashboard (modo test) apontando para Railway — **feito**
-12. Env vars no Railway: `STRIPE_SECRET_KEY`, `STRIPE_PRICE_*`, `STRIPE_WEBHOOK_SECRET`, `RESEND_API_KEY` — **feitas**
-13. Middleware de verificação de assinatura — **feito** (`src/lib/checkSubscription.ts`)
-    - `assertActiveSubscription()` bloqueia com 403 quando `trial_expired`, `canceled` ou `deleted`
-    - Aplicado em: `POST/PATCH/DELETE /products`, `POST /products/:id/adjust`, `POST /members/invite`, `PATCH /workspaces/:id`
-14. Job de limpeza de workspaces expirados — **feito** (`src/lib/cleanup.ts`)
-    - `node-cron` roda `runCleanup()` todo dia às 4h UTC dentro do processo Node.js
-    - Transiciona `trialing` → `trial_expired` quando `trial_ends_at` passa
-    - Aviso por email no dia 14, deleção no dia 30 (via Resend)
-    - Endpoint manual `POST /admin/cleanup` protegido por `CRON_SECRET`
+1. Renomear `intermediate` → `growth` — planos `basic/growth/pro`, preços R$19,90/R$29,90/R$59,90
+2. Tabela `subscriptions` criada no Supabase
+3. `POST /workspaces` — cria subscription automaticamente; only `growth` tem trial; CPF obrigatório, salvo em `profiles.cpf`; limite de 1 trial por CPF
+4. `src/lib/stripe.ts` + `src/routes/v1/billing.ts` (checkout, portal, subscription)
+5. `POST /webhooks/stripe` — `src/routes/webhooks.ts`
+   - Raw body via `addContentTypeParser("application/json", { parseAs: "buffer" })` em `server.ts`
+   - Eventos: `checkout.session.completed`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated/deleted`
+   - `success_url` / `cancel_url` apontam para `/select-workspace` (não `/dashboard`) para evitar perda de sessão
+6. Frontend: `plan-selection` → basic/pro redirecionam ao Stripe imediatamente; growth vai para `/select-workspace` com trial
+7. Frontend: `register-company` coleta CPF, salva em sessionStorage; `plan-selection` lê de lá
+8. Frontend: `select-workspace` mostra banner verde/vermelho com `?checkout=success/canceled`
+9. Frontend: `TrialBanner` no dashboard (`src/components/dashboard/TrialBanner.tsx`)
+10. Frontend: `/configuracoes` — seção billing funcional (upgrade, portal, encerrar)
+11. `src/lib/checkSubscription.ts` — `assertActiveSubscription()` bloqueia com 403 em `trial_expired/canceled/deleted`; aplicado em POST/PATCH/DELETE products, adjust, invite, PATCH workspace
+12. `src/lib/cleanup.ts` — node-cron às 4h UTC: trialing→trial_expired, aviso email dia 14, deleção dia 30 (via Resend)
+13. `DELETE /workspaces/:id` cancela assinatura no Stripe antes de deletar
+14. `profiles.cpf` column + unique index no Supabase
+15. Webhook cadastrado no Stripe Dashboard com eventos: `checkout.session.completed`, `customer.subscription.deleted/updated`, `invoice.paid`, `invoice.payment_failed`
 
 #### 🔜 Pendente
-- Nenhum pendente no backend
+- Confirmar webhook funcionando (STRIPE_WEBHOOK_SECRET deve estar como variável de serviço no Railway)
 
 ### ✅ RPC `invite_member` — substituída pela rota da API
 
