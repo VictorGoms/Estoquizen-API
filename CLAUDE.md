@@ -376,7 +376,7 @@ CRON_SECRET=...                        # segredo para chamar POST /admin/cleanup
 15. Webhook cadastrado no Stripe Dashboard com eventos: `checkout.session.completed`, `customer.subscription.deleted/updated`, `invoice.paid`, `invoice.payment_failed`
 
 #### 🔜 Pendente
-- Confirmar webhook funcionando (STRIPE_WEBHOOK_SECRET deve estar como variável de serviço no Railway)
+- Nenhum pendente no backend
 
 ### ✅ RPC `invite_member` — substituída pela rota da API
 

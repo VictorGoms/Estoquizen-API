@@ -30,11 +30,6 @@ const fastify = Fastify({
 fastify.addContentTypeParser("application/json", { parseAs: "buffer" }, function (req, body, done) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (req as any).rawBody = body;
-  fastify.log.warn({ // DEBUG TEMPORÁRIO
-    isBuffer: Buffer.isBuffer(body),
-    length: (body as Buffer).length,
-    first80: (body as Buffer).toString("utf8", 0, 80),
-  }, "[DEBUG] content-type-parser");
   try {
     done(null, JSON.parse((body as Buffer).toString("utf8")));
   } catch {
