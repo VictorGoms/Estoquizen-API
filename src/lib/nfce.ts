@@ -3,7 +3,9 @@ import * as cheerio from "cheerio";
 export interface NfceItem {
   nome:           string;
   quantidade:     number;
-  valor_unitario: number;
+  unidade:        string;  // normalized: "kg", "un", "L", "pc", etc.
+  codigo:         string;  // EAN/GTIN from NF-e (may be empty)
+  valor_unitario: number;  // always per-unit after normalization (e.g. g→kg multiplies by 1000)
   valor_total:    number;
 }
 
@@ -56,6 +58,44 @@ const FETCH_HEADERS = {
 const toFloat = (str: string) =>
   parseFloat((str ?? "").replace(/[^\d,]/g, "").replace(",", ".")) || 0;
 
+function parseQtyUnit(rqtdText: string, unitFallback = ""): { quantidade: number; unidade: string; priceFactor: number } {
+  const cleaned = rqtdText.replace(/.*:\s*/, "").trim();
+  const match   = cleaned.match(/^([\d.,]+)\s*(.*?)$/);
+  let quantidade = parseFloat((match?.[1] ?? "0").replace(",", ".")) || 0;
+  /* unit from same cell, or dedicated unit element (.RUN, .Rum, etc.) */
+  const raw      = ((match?.[2] ?? "").trim() || unitFallback).toLowerCase();
+
+  let unidade: string;
+  let priceFactor = 1;
+
+  switch (raw) {
+    case "kg": case "kilo": case "quilograma": case "quilogramas":
+      unidade = "kg"; break;
+    case "g": case "gr": case "grama": case "gramas":
+      unidade = "kg";
+      quantidade = +(quantidade / 1000).toFixed(3);
+      priceFactor = 1000; // price was per-gram → convert to per-kg
+      break;
+    case "l": case "lt": case "litro": case "litros":
+      unidade = "L"; break;
+    case "ml": case "mililitro": case "mililitros":
+      unidade = "L";
+      quantidade = +(quantidade / 1000).toFixed(3);
+      priceFactor = 1000;
+      break;
+    case "pc": case "pcs": case "pç":
+      unidade = "pc"; break;
+    case "cx": case "caixa": case "caixas":
+      unidade = "cx"; break;
+    case "": case "un": case "und": case "unidade": case "unidades":
+      unidade = "un"; break;
+    default:
+      unidade = raw.toUpperCase() || "un";
+  }
+
+  return { quantidade, unidade, priceFactor };
+}
+
 function parseItens(html: string): NfceItem[] {
   const $ = cheerio.load(html);
   const itens: NfceItem[] = [];
@@ -65,11 +105,14 @@ function parseItens(html: string): NfceItem[] {
     const nome = $(row).find(".txtTit").first().text().trim();
     if (!nome) return;
 
-    const quantidade     = parseFloat($(row).find(".Rqtd").text().replace(/.*:\s*/, "").trim()) || 0;
-    const valor_unitario = toFloat($(row).find(".RvlUnit").text());
+    /* unit can live inside .Rqtd ("Qtd.: 2 KG") or in a separate .RUN/.Rum/.RunMed cell */
+    const unitEl    = $(row).find(".RUN, .Rum, .RunMed, .Rund").first().text().replace(/.*:\s*/, "").trim();
+    const { quantidade, unidade, priceFactor } = parseQtyUnit($(row).find(".Rqtd").text(), unitEl);
+    const valor_unitario = toFloat($(row).find(".RvlUnit").text()) * priceFactor;
     const valor_total    = toFloat($(row).find(".valor").text());
+    const codigo         = $(row).find(".RCod").text().replace(/[Cc]ód[^:]*:\s*/, "").trim();
 
-    itens.push({ nome, quantidade, valor_unitario, valor_total });
+    itens.push({ nome, quantidade, unidade, codigo, valor_unitario, valor_total });
   });
 
   return itens;

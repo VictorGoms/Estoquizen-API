@@ -8,9 +8,9 @@ export const CreateProductSchema = z.object({
   code:         z.string().optional().nullable().transform((v) => (!v ? null : sanitizeCode(v) || null)),
   unit:         str(20).pipe(z.string().min(1, "Unidade é obrigatória")),
   price:        z.number().nonnegative("Preço não pode ser negativo"),
-  qty:          z.number().int().nonnegative("Quantidade não pode ser negativa").default(0),
-  min_qty:      z.number().int().nonnegative().default(0),
-  max_qty:      z.number().int().nonnegative().optional(),
+  qty:          z.number().nonnegative("Quantidade não pode ser negativa").default(0),
+  min_qty:      z.number().nonnegative().default(0),
+  max_qty:      z.number().nonnegative().optional(),
   location:     str(200).optional(),
   supplier:     str(200).optional(),
   image_url:    z.nullable(z.string().url()).optional(),
@@ -20,7 +20,7 @@ export const CreateProductSchema = z.object({
 export const UpdateProductSchema = CreateProductSchema.partial().omit({ workspace_id: true });
 
 export const AdjustQtySchema = z.object({
-  delta:  z.number().int(),
+  delta:  z.number(),
   reason: str(300).optional(),
 });
 

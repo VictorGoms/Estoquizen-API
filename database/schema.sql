@@ -78,9 +78,9 @@ create table if not exists public.products (
   category     text not null default '',
   unit         text not null default 'un',
   price        numeric(12, 2) not null default 0 check (price >= 0),
-  qty          integer not null default 0 check (qty >= 0),
-  min_qty      integer not null default 0,
-  max_qty      integer,
+  qty          numeric(12,3) not null default 0 check (qty >= 0),
+  min_qty      numeric(12,3) not null default 0,
+  max_qty      numeric(12,3),
   location     text,
   supplier     text,
   image_url    text,
@@ -97,7 +97,7 @@ create table if not exists public.products (
 create table if not exists public.movements (
   id         uuid primary key default uuid_generate_v4(),
   product_id uuid not null references public.products(id) on delete cascade,
-  delta      integer not null,   -- positivo = entrada, negativo = saída
+  delta      numeric(12,3) not null,   -- positivo = entrada, negativo = saída
   reason     text,               -- ex: "NF-e 35240312345678", "Retirada manutenção"
   created_by uuid references auth.users(id),
   created_at timestamptz default now()
@@ -274,7 +274,7 @@ create policy "Membro registra movimentações"
 -- ============================================================
 create or replace function public.adjust_product_qty(
   p_product_id uuid,
-  p_delta      integer,
+  p_delta      numeric,
   p_reason     text    default null,
   p_user_id    uuid    default null
 )
@@ -283,8 +283,8 @@ language plpgsql
 security invoker
 as $$
 declare
-  v_new_qty    integer;
-  v_workspace  uuid;
+  v_new_qty   numeric(12,3);
+  v_workspace uuid;
 begin
   -- Verifica que o produto pertence a um workspace do usuário autenticado
   -- (defesa explícita, independente do RLS)
