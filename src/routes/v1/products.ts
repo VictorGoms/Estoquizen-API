@@ -88,15 +88,24 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
 
     /* Se houver estoque inicial, registra como primeira movimentação */
     if (initialQty > 0) {
-      await db.rpc("adjust_product_qty", {
+      const { data: adjusted, error: adjustError } = await db.rpc("adjust_product_qty", {
         p_product_id: data.id,
         p_delta:      initialQty,
         p_reason:     "Estoque inicial",
         p_user_id:    req.user.id,
       });
+
+      if (adjustError) {
+        /* Sem desfazer, o produto ficaria com estoque 0 sem o usuário saber.
+           supabaseAdmin porque member não tem DELETE pela RLS; apaga só o produto recém-criado. */
+        await supabaseAdmin.from("products").delete().eq("id", data.id);
+        return reply.status(500).send(fail(dbError(adjustError)));
+      }
+
+      return reply.status(201).send(ok({ ...data, qty: (adjusted as { qty: number }).qty }));
     }
 
-    return reply.status(201).send(ok({ ...data, qty: initialQty }));
+    return reply.status(201).send(ok(data));
   });
 
   /* PATCH /products/:id */
@@ -144,7 +153,8 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (error) {
       const isNotFound = error.message.includes("não encontrado") || error.message.includes("insuficiente");
-      return reply.status(isNotFound ? 400 : 500).send(fail(dbError(error)));
+      const status = error.message.includes("Acesso negado") ? 403 : isNotFound ? 400 : 500;
+      return reply.status(status).send(fail(dbError(error)));
     }
     return reply.send(ok(data));
   });

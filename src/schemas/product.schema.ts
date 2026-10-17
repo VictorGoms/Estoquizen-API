@@ -20,7 +20,7 @@ export const CreateProductSchema = z.object({
 export const UpdateProductSchema = CreateProductSchema.partial().omit({ workspace_id: true });
 
 export const AdjustQtySchema = z.object({
-  delta:  z.number(),
+  delta:  z.number().refine((d) => d !== 0, "A quantidade deve ser diferente de zero"),
   reason: str(300).optional(),
 });
 
