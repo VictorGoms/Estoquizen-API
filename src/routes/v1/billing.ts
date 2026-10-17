@@ -2,6 +2,9 @@ import type { FastifyPluginAsync } from "fastify";
 import { stripe, PRICE_IDS } from "../../lib/stripe.js";
 import { supabaseAdmin } from "../../lib/supabase.js";
 import { ok, fail, dbError } from "../../lib/response.js";
+import { requireMember } from "../../lib/membership.js";
+
+const OWNER_ONLY = "Só o owner do workspace pode gerenciar a assinatura.";
 
 const billingRoutes: FastifyPluginAsync = async (fastify) => {
   const auth = { preHandler: [fastify.authenticate] };
@@ -10,6 +13,8 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get("/billing/subscription", auth, async (req, reply) => {
     const { workspace_id } = req.query as { workspace_id?: string };
     if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
+
+    if (!await requireMember(workspace_id, req.user.id, reply)) return;
 
     const { data, error } = await supabaseAdmin
       .from("subscriptions")
@@ -28,6 +33,8 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
     const { workspace_id, plan } = req.body as { workspace_id?: string; plan?: string };
     if (!workspace_id || !plan) return reply.status(400).send(fail("workspace_id e plan são obrigatórios"));
     if (!["basic", "growth", "pro"].includes(plan)) return reply.status(400).send(fail("Plano inválido"));
+
+    if (!await requireMember(workspace_id, req.user.id, reply, ["owner"], OWNER_ONLY)) return;
 
     const priceId = PRICE_IDS[plan];
     if (!priceId) return reply.status(500).send(fail("Price ID não configurado para este plano"));
@@ -82,6 +89,8 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post("/billing/portal", auth, async (req, reply) => {
     const { workspace_id } = req.body as { workspace_id?: string };
     if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
+
+    if (!await requireMember(workspace_id, req.user.id, reply, ["owner"], OWNER_ONLY)) return;
 
     const { data: sub } = await supabaseAdmin
       .from("subscriptions")

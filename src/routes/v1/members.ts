@@ -4,6 +4,7 @@ import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { ok, fail, dbError } from "../../lib/response.js";
 import { getLimits } from "../../lib/plans.js";
 import { assertActiveSubscription } from "../../lib/checkSubscription.js";
+import { requireMember } from "../../lib/membership.js";
 
 const membersRoutes: FastifyPluginAsync = async (fastify) => {
   const auth       = { preHandler: [fastify.authenticate] };
@@ -14,6 +15,8 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get("/members", auth, async (req, reply) => {
     const { workspace_id } = req.query as { workspace_id?: string };
     if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
+
+    if (!await requireMember(workspace_id, req.user.id, reply)) return;
 
     const { data: memberRows, error: membersErr } = await supabaseAdmin
       .from("workspace_members")
@@ -49,6 +52,14 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
 
     const { email: rawEmail, name, role, workspace_id } = parsed.data;
     const email = rawEmail.toLowerCase().trim();
+
+    const requesterRole = await requireMember(
+      workspace_id, req.user.id, reply, ["owner", "admin"], "Só owner ou admin podem convidar membros.",
+    );
+    if (!requesterRole) return;
+    if (role === "owner" && requesterRole !== "owner") {
+      return reply.status(403).send(fail("Só o owner pode convidar outro owner."));
+    }
 
     if (!await assertActiveSubscription(workspace_id, reply)) return;
 
