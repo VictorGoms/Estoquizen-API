@@ -109,7 +109,15 @@ await fastify.register(cleanupRoutes);
 
 /* ── Cron: limpeza de workspaces expirados (todo dia às 4h UTC) ── */
 cron.schedule("0 4 * * *", () => {
-  runCleanup().catch((err) => fastify.log.error(err, "Erro no cleanup job"));
+  runCleanup()
+    .then((result) => {
+      if (result.deleteErrors.length || result.emailErrors.length) {
+        fastify.log.error(result, "cleanup job concluído com falhas");
+      } else {
+        fastify.log.info(result, "cleanup job concluído");
+      }
+    })
+    .catch((err) => fastify.log.error(err, "Erro no cleanup job"));
 });
 
 /* ── Start ── */

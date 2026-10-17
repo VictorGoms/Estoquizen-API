@@ -5,7 +5,9 @@ const EXPIRED_STATUSES  = ["trial_expired", "canceled"];
 const WARN_AFTER_DAYS   = 14;
 const DELETE_AFTER_DAYS = 30;
 
-export async function runCleanup(): Promise<{ expired: number; deleted: number; warned: number; deleteErrors: string[] }> {
+export async function runCleanup(): Promise<{
+  expired: number; deleted: number; warned: number; deleteErrors: string[]; emailErrors: string[];
+}> {
   const now          = new Date();
   const warnCutoff   = new Date(now.getTime() - WARN_AFTER_DAYS   * 24 * 60 * 60 * 1000).toISOString();
   const deleteCutoff = new Date(now.getTime() - DELETE_AFTER_DAYS * 24 * 60 * 60 * 1000).toISOString();
@@ -28,6 +30,7 @@ export async function runCleanup(): Promise<{ expired: number; deleted: number; 
 
   let deleted = 0;
   const deleteErrors: string[] = [];
+  const emailErrors: string[]  = [];
 
   for (const row of toDelete ?? []) {
     const ws = row.workspaces as unknown as { id: string; name: string; created_by: string } | null;
@@ -52,8 +55,11 @@ export async function runCleanup(): Promise<{ expired: number; deleted: number; 
     deleted++;
 
     if (profile?.email) {
-      sendWorkspaceDeletionEmail({ to: profile.email, workspaceName: ws.name })
-        .catch(() => {/* ignora falha de email */});
+      try {
+        await sendWorkspaceDeletionEmail({ to: profile.email, workspaceName: ws.name });
+      } catch (err) {
+        emailErrors.push(`exclusão ${ws.id}: ${(err as Error).message}`);
+      }
     }
   }
 
@@ -82,11 +88,13 @@ export async function runCleanup(): Promise<{ expired: number; deleted: number; 
     const daysExpired     = Math.floor((now.getTime() - new Date(row.updated_at as string).getTime()) / (24 * 60 * 60 * 1000));
     const daysUntilDelete = Math.max(1, DELETE_AFTER_DAYS - daysExpired);
 
-    sendExpirationWarningEmail({ to: profile.email, workspaceName: ws.name, daysUntilDelete })
-      .catch(() => {/* ignora falha de email */});
-
-    warned++;
+    try {
+      await sendExpirationWarningEmail({ to: profile.email, workspaceName: ws.name, daysUntilDelete });
+      warned++;
+    } catch (err) {
+      emailErrors.push(`aviso ${ws.id}: ${(err as Error).message}`);
+    }
   }
 
-  return { expired: expired ?? 0, deleted, warned, deleteErrors };
+  return { expired: expired ?? 0, deleted, warned, deleteErrors, emailErrors };
 }

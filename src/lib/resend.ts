@@ -4,6 +4,13 @@ const resend = new Resend(process.env.RESEND_API_KEY ?? "");
 
 const FROM = "Estoquizen <noreply@estoquizen.com.br>";
 
+/* O SDK do Resend não lança exceção quando o envio é recusado (ex.: domínio não verificado):
+   devolve { error }. Lança aqui para quem chama poder registrar a falha. */
+async function send(payload: Parameters<typeof resend.emails.send>[0]) {
+  const { error } = await resend.emails.send(payload);
+  if (error) throw new Error(`Resend recusou o envio: ${error.name} - ${error.message}`);
+}
+
 export async function sendExpirationWarningEmail(params: {
   to:           string;
   workspaceName: string;
@@ -12,7 +19,7 @@ export async function sendExpirationWarningEmail(params: {
   const { to, workspaceName, daysUntilDelete } = params;
   const siteUrl = (process.env.ALLOWED_ORIGINS ?? "https://estoquizen.vercel.app").split(",")[0].trim();
 
-  await resend.emails.send({
+  await send({
     from:    FROM,
     to,
     subject: `Seu workspace "${workspaceName}" será excluído em ${daysUntilDelete} dias`,
@@ -65,7 +72,7 @@ export async function sendWorkspaceDeletionEmail(params: {
 }) {
   const { to, workspaceName } = params;
 
-  await resend.emails.send({
+  await send({
     from:    FROM,
     to,
     subject: `Workspace "${workspaceName}" foi excluído`,
