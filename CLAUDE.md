@@ -39,7 +39,7 @@ src/
     supabase.ts          — supabaseAdmin + supabaseForUser(token)
     response.ts          — ok(), fail(), dbError(), dbStatus(), sendDbError()
     membership.ts        — requireMember(workspace, user, reply, roles?) — 404 se não é membro, 403 se o papel não basta
-    checkSubscription.ts — assertActiveSubscription() + getProductWorkspaceId()
+    checkSubscription.ts — assertActiveSubscription() (trial vencido bloqueia na hora) + expireTrialIfDue() + getProductWorkspaceId()
     zodPt.ts             — mensagens padrão do Zod em português (importado no server.ts)
     sanitize.ts          — sanitizeText, sanitizeCode, sanitizeNumber, sanitizeEmail, sanitizeCpf
     plans.ts             — PLAN_LIMITS (basic/growth/pro) + getLimits() + dailyInvites
@@ -124,12 +124,14 @@ O slug `intermediate` foi renomeado para `growth` — constraint e dados já atu
 - `profiles`          — id (= auth.uid), name, email, phone, avatar_color, cpf (unique, nullable)
 - `products`          — id, workspace_id, name, code (NOT NULL), category, unit, price, qty, min_qty, max_qty, location, supplier, image_url, nota_fiscal, created_by, created_at, updated_at
 - `movements`         — id, product_id, delta, reason, created_by, created_at
-- `subscriptions`     — id, workspace_id, plan, status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_subscription_id, stripe_price_id, created_at, updated_at
+- `subscriptions`     — id, workspace_id, plan, status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_subscription_id, stripe_price_id, created_at, updated_at, expired_at, warned_at
 - `nota_imports`      — notas importadas: workspace_id, chave (única por workspace), tipo, itens, imported_by, created_at
 - `trial_grants`      — trials concedidos: user_id (único), cpf_hash SHA-256 (único), workspace_id, granted_at. RLS sem policies: só a API acessa
 - `invite_log`        — cada e-mail de convite enviado (workspace_id, invited_by, created_at), para o limite diário. RLS sem policies
 
 Trigger `protect_workspace_owner` (BEFORE UPDATE/DELETE em `workspace_members`): só owner promove alguém a owner ou altera/remove outro owner, e o workspace nunca fica sem owner ativo. Vale também para as escritas diretas do front; o service_role passa direto.
+
+Trigger `subscriptions_track_expiry` (BEFORE INSERT/UPDATE OF status em `subscriptions`): grava `expired_at` quando a assinatura expira e limpa `expired_at`/`warned_at` quando ela volta a valer. Base do job de limpeza.
 
 ```sql
 -- CPF no perfil (rodar no Supabase SQL Editor se ainda não existir)
@@ -360,12 +362,12 @@ Detalhes da API `2026-03-25.dahlia` (SCRUM-46 e 47):
 - No fim do ciclo, Stripe emite `customer.subscription.deleted` → webhook muda para `status = canceled`
 
 ### Job agendado (deleção de workspaces) — `src/lib/cleanup.ts`
-- Roda **todo dia às 4h UTC** via `node-cron` dentro do processo Node.js (sem serviço externo)
-- Agendado em `server.ts` com `cron.schedule("0 4 * * *", () => runCleanup())`
+- Roda **todo dia às 4h UTC** via `node-cron` e **toda vez que o servidor sobe em produção** (com o sleep do Railway, o cron das 4h pode não rodar; assim cada vez que a API acorda o job recupera o atraso). Uma trava evita duas rodadas ao mesmo tempo
+- A contagem usa `subscriptions.expired_at`, preenchido pela trigger `subscriptions_track_expiry` quando a assinatura entra em `trial_expired`/`canceled` (no trial vencido, a data do fim do trial) e limpo quando sai. Antes usava `updated_at`, que muda com qualquer atualização (SCRUM-56)
 - Fluxo em ordem:
-  1. `trialing` + `trial_ends_at < now()` → atualiza para `trial_expired`
-  2. `trial_expired` ou `canceled` + 14+ dias → envia email de aviso via Resend
-  3. `trial_expired` ou `canceled` + 30+ dias → deleta workspace (cascade) + email de confirmação
+  1. `trialing` + `trial_ends_at < now()` → atualiza para `trial_expired` (a API também faz isso na hora, em `assertActiveSubscription` e `GET /billing/subscription`)
+  2. expirado há 30+ dias **e avisado há 3+ dias** → deleta workspace (cascade) + email de confirmação. Ninguém é excluído sem aviso
+  3. expirado há 14+ dias e `warned_at` vazio → envia o aviso **uma vez** e grava `warned_at` (antes saía todo dia entre o 14º e o 29º dia). Se o Resend falhar, tenta de novo na próxima rodada
 - Emails via **Resend** (`src/lib/resend.ts`) — HTTP, sem SMTP bloqueado no Railway
 - Endpoint manual `POST /admin/cleanup` (protegido por `CRON_SECRET`) para forçar execução
 

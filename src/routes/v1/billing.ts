@@ -3,6 +3,7 @@ import { stripe, PRICE_IDS } from "../../lib/stripe.js";
 import { supabaseAdmin } from "../../lib/supabase.js";
 import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { requireMember } from "../../lib/membership.js";
+import { expireTrialIfDue } from "../../lib/checkSubscription.js";
 
 const OWNER_ONLY = "Só o owner do workspace pode gerenciar a assinatura.";
 
@@ -15,6 +16,9 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
     if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
 
     if (!await requireMember(workspace_id, req.user.id, reply)) return;
+
+    /* Trial vencido aparece como vencido mesmo se o job diário ainda não rodou */
+    await expireTrialIfDue(workspace_id).catch((err) => req.log.error({ err, workspace_id }, "falha ao expirar o trial"));
 
     const { data, error } = await supabaseAdmin
       .from("subscriptions")

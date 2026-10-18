@@ -4,13 +4,24 @@ import { sendExpirationWarningEmail, sendWorkspaceDeletionEmail } from "./resend
 const EXPIRED_STATUSES  = ["trial_expired", "canceled"];
 const WARN_AFTER_DAYS   = 14;
 const DELETE_AFTER_DAYS = 30;
+/* Ninguém é excluído sem aviso: se o job ficou dias sem rodar (sleep do Railway), o aviso sai
+   primeiro e a exclusão espera pelo menos este prazo depois dele */
+const MIN_NOTICE_DAYS   = 3;
+const DAY_MS            = 24 * 60 * 60 * 1000;
+
+/*
+ * A contagem usa subscriptions.expired_at, que a trigger subscriptions_track_expiry preenche
+ * quando a assinatura expira (no trial vencido, a data do fim do trial). Antes usava updated_at,
+ * que muda com qualquer atualização, e o aviso saía todo dia; agora warned_at marca o envio.
+ */
 
 export async function runCleanup(): Promise<{
   expired: number; deleted: number; warned: number; deleteErrors: string[]; emailErrors: string[];
 }> {
   const now          = new Date();
-  const warnCutoff   = new Date(now.getTime() - WARN_AFTER_DAYS   * 24 * 60 * 60 * 1000).toISOString();
-  const deleteCutoff = new Date(now.getTime() - DELETE_AFTER_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const warnCutoff   = new Date(now.getTime() - WARN_AFTER_DAYS   * DAY_MS).toISOString();
+  const deleteCutoff = new Date(now.getTime() - DELETE_AFTER_DAYS * DAY_MS).toISOString();
+  const noticeCutoff = new Date(now.getTime() - MIN_NOTICE_DAYS   * DAY_MS).toISOString();
 
   /* ── 0. Transicionar trialing → trial_expired quando trial_ends_at passou ── */
   const { data: expiredRows } = await supabaseAdmin
@@ -21,12 +32,13 @@ export async function runCleanup(): Promise<{
     .select("id");
   const expired = expiredRows?.length ?? 0;
 
-  /* ── 1. Deletar workspaces expirados há 30+ dias ── */
+  /* ── 1. Excluir workspaces expirados há 30+ dias e avisados há MIN_NOTICE_DAYS+ dias ── */
   const { data: toDelete } = await supabaseAdmin
     .from("subscriptions")
     .select("workspace_id, workspaces(id, name, created_by)")
     .in("status", EXPIRED_STATUSES)
-    .lte("updated_at", deleteCutoff);
+    .lte("expired_at", deleteCutoff)
+    .lte("warned_at", noticeCutoff);
 
   let deleted = 0;
   const deleteErrors: string[] = [];
@@ -63,13 +75,13 @@ export async function runCleanup(): Promise<{
     }
   }
 
-  /* ── 2. Avisar workspaces expirados entre 14 e 29 dias ── */
+  /* ── 2. Avisar (uma vez) quem expirou há 14+ dias ── */
   const { data: toWarn } = await supabaseAdmin
     .from("subscriptions")
-    .select("workspace_id, updated_at, workspaces(id, name, created_by)")
+    .select("workspace_id, expired_at, workspaces(id, name, created_by)")
     .in("status", EXPIRED_STATUSES)
-    .lte("updated_at", warnCutoff)
-    .gt("updated_at", deleteCutoff);
+    .lte("expired_at", warnCutoff)
+    .is("warned_at", null);
 
   let warned = 0;
 
@@ -85,15 +97,23 @@ export async function runCleanup(): Promise<{
 
     if (!profile?.email) continue;
 
-    const daysExpired     = Math.floor((now.getTime() - new Date(row.updated_at as string).getTime()) / (24 * 60 * 60 * 1000));
-    const daysUntilDelete = Math.max(1, DELETE_AFTER_DAYS - daysExpired);
+    const daysExpired     = Math.floor((now.getTime() - new Date(row.expired_at as string).getTime()) / DAY_MS);
+    const daysUntilDelete = Math.max(MIN_NOTICE_DAYS, DELETE_AFTER_DAYS - daysExpired);
 
     try {
       await sendExpirationWarningEmail({ to: profile.email, workspaceName: ws.name, daysUntilDelete });
-      warned++;
     } catch (err) {
       emailErrors.push(`aviso ${ws.id}: ${(err as Error).message}`);
+      continue;
     }
+
+    /* Só marca depois do envio: se o Resend falhar, tenta de novo na próxima rodada */
+    const { error: markErr } = await supabaseAdmin
+      .from("subscriptions")
+      .update({ warned_at: now.toISOString() })
+      .eq("workspace_id", ws.id);
+    if (markErr) emailErrors.push(`aviso ${ws.id} enviado, mas warned_at não gravou: ${markErr.message}`);
+    warned++;
   }
 
   return { expired: expired ?? 0, deleted, warned, deleteErrors, emailErrors };

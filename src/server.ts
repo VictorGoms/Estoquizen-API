@@ -131,21 +131,32 @@ await fastify.register(webhookRoutes);
 await fastify.register(cleanupRoutes);
 
 /* ── Cron: limpeza de workspaces expirados (todo dia às 4h UTC) ── */
-cron.schedule("0 4 * * *", () => {
+/* O Railway põe a API para dormir (sleepApplication), e aí o cron das 4h UTC não roda.
+   Por isso o job também roda quando o servidor sobe em produção: cada vez que a API acorda,
+   recupera o que ficou para trás. É idempotente (aviso só uma vez por expiração, via warned_at). */
+let cleanupRunning = false;
+function runCleanupJob(origem: string) {
+  if (cleanupRunning) return;
+  cleanupRunning = true;
   runCleanup()
     .then((result) => {
       if (result.deleteErrors.length || result.emailErrors.length) {
-        fastify.log.error(result, "cleanup job concluído com falhas");
+        fastify.log.error({ ...result, origem }, "cleanup job concluído com falhas");
       } else {
-        fastify.log.info(result, "cleanup job concluído");
+        fastify.log.info({ ...result, origem }, "cleanup job concluído");
       }
     })
-    .catch((err) => fastify.log.error(err, "Erro no cleanup job"));
-});
+    .catch((err) => fastify.log.error({ err, origem }, "Erro no cleanup job"))
+    .finally(() => { cleanupRunning = false; });
+}
+
+cron.schedule("0 4 * * *", () => runCleanupJob("cron"));
 
 /* ── Start ── */
 try {
   await fastify.listen({ port: PORT, host: "0.0.0.0" });
+  /* Só em produção: o .env local aponta para o mesmo banco */
+  if (process.env.NODE_ENV === "production") runCleanupJob("inicio");
   console.log(`\n🚀 Estoquizen API rodando em http://localhost:${PORT}`);
   console.log(`📄 Documentação:          http://localhost:${PORT}/docs\n`);
 } catch (err) {
