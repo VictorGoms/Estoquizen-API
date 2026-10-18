@@ -37,5 +37,12 @@ mkcert.exe
 .vscode/
 .idea/
 
+# Supabase CLI (arquivos temporários do link com o projeto)
+supabase/.temp/
+
+# Estado local de ferramentas de IA e testes (não é código do projeto)
+.omc/
+.playwright-cli/
+
 # Claude Code (descomente para não subir ao GitHub)
 # CLAUDE.md
