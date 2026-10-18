@@ -9,7 +9,7 @@ SaaS de gestão de estoque multi-tenant. O backend é uma API REST que serve o f
 - Banco: Supabase (Postgres) — sem Prisma, sem ORM
 - Validação: Zod (sempre antes de tocar o banco)
 - Auth: Supabase Auth (JWT verificado via `supabaseAdmin.auth.getUser`)
-- Email: nodemailer (Gmail SMTP) — para convites de usuários já cadastrados
+- E-mail: convites, confirmação e senha saem pelo Supabase Auth com SMTP do Resend (remetente `noreply@estoquizen.com.br`, domínio verificado); avisos do trial saem pela API do Resend (`src/lib/resend.ts`)
 - Docs: Swagger UI em `/docs` (via `@fastify/swagger` + `@fastify/swagger-ui`)
 
 ## Portas
@@ -27,21 +27,30 @@ src/
     products.ts          — CRUD + ajuste de estoque + movimentações
     workspaces.ts        — CRUD de workspaces + stats do dashboard
     members.ts           — convite e gestão de membros
-    nfe.ts               — consulta NFC-e por chave (44 dígitos)
+    nfe.ts               — consulta NFC-e por chave e importa a nota (transacional)
+    billing.ts           — assinatura, checkout e portal do Stripe
+  routes/webhooks.ts     — POST /webhooks/stripe (API dahlia)
+  routes/admin/cleanup.ts — POST /admin/cleanup (CRON_SECRET)
   schemas/
-    product.schema.ts    — CreateProductSchema, UpdateProductSchema, AdjustQtySchema
+    product.schema.ts    — CreateProductSchema, UpdateProductSchema (sem qty), AdjustQtySchema
     workspace.schema.ts  — CreateWorkspaceSchema, UpdateWorkspaceSchema
     member.schema.ts     — InviteMemberSchema, UpdateMemberSchema
   lib/
     supabase.ts          — supabaseAdmin + supabaseForUser(token)
-    response.ts          — ok(), fail(), dbError() helpers
-    sanitize.ts          — sanitizeText, sanitizeCode, sanitizeNumber, sanitizeEmail
-    plans.ts             — PLAN_LIMITS (basic/intermediate/pro) + getLimits() + dailyInvites
+    response.ts          — ok(), fail(), dbError(), dbStatus(), sendDbError()
+    membership.ts        — requireMember(workspace, user, reply, roles?) — 404 se não é membro, 403 se o papel não basta
+    checkSubscription.ts — assertActiveSubscription() + getProductWorkspaceId()
+    zodPt.ts             — mensagens padrão do Zod em português (importado no server.ts)
+    sanitize.ts          — sanitizeText, sanitizeCode, sanitizeNumber, sanitizeEmail, sanitizeCpf
+    plans.ts             — PLAN_LIMITS (basic/growth/pro) + getLimits() + dailyInvites
     nfce.ts              — consultarNfce(chave) — faz scraping/consulta da SEFAZ
-    mailer.ts            — sendWorkspaceInviteEmail() via nodemailer/Gmail SMTP
+    stripe.ts            — cliente Stripe (apiVersion 2026-03-25.dahlia) + PRICE_IDS
+    resend.ts            — e-mails do trial (lança erro se o Resend recusar)
+    cleanup.ts           — job diário de expiração/aviso/exclusão
   types/index.ts         — ApiResponse<T>, augment FastifyRequest (req.user)
+supabase/migrations/     — migrações SQL (fonte da verdade do banco; aplicar pelo MCP ou SQL Editor)
 database/
-  schema.sql             — schema completo do Postgres (aplicar no Supabase SQL Editor)
+  schema.sql             — schema antigo (desatualizado; ver supabase/migrations)
   seed.sql               — dados de teste (opcional)
 ```
 
@@ -50,8 +59,11 @@ database/
 - Rotas protegidas: `{ preHandler: [fastify.authenticate] }`
 - Rotas que respeitam RLS: usar `supabaseForUser(token)` — NÃO supabaseAdmin
 - Rotas privilegiadas (criar workspace, convidar usuário): usar `supabaseAdmin`
+- **Rota que usa `supabaseAdmin` (ignora RLS) chama `requireMember()` antes de ler ou gravar** — sem isso qualquer conta acessa qualquer workspace pelo id (SCRUM-42 a 45)
 - Validação de body sempre com Zod antes de tocar o banco
-- Erros do banco sempre passam por `dbError()` antes de ir ao cliente (evita vazar nomes de tabelas/constraints)
+- Erro do banco: `return sendDbError(req, reply, error)` — status pelo código do Postgres (23505→409, FK/NOT NULL/CHECK→400, 42501→403), mensagem saneada por `dbError()` e log do original nos 500
+- O supabase-js e o SDK do Resend **não lançam exceção**: devolvem `{ error }`. Sempre checar o `error`
+- Erros não tratados e rota inexistente já saem como `{ data: null, error }` em português (setErrorHandler/setNotFoundHandler no server.ts)
 
 ## Auth flow
 1. Cliente faz login via Supabase Auth (frontend/mobile)
@@ -66,33 +78,36 @@ database/
 - `GET  /products?workspace_id=xxx` — lista produtos do workspace (usa RLS)
 - `GET  /products/:id` — detalhe do produto
 - `POST /products` — cria produto; valida limite do plano; `code` é gerado automaticamente (`AUTO-XXXXXXXX`) se não informado (evita NOT NULL constraint para produtos importados via NFC-e)
-- `PATCH /products/:id` — atualiza produto
+- `PATCH /products/:id` — atualiza produto (não aceita `qty`: estoque só muda por `/adjust`, que grava a movimentação)
 - `DELETE /products/:id` — remove produto (RLS exige owner/admin)
 - `POST /products/:id/adjust` — entrada/saída de estoque via RPC `adjust_product_qty` (atômico)
 - `GET  /products/:id/movements?since=<iso>&limit=<n>` — histórico de movimentações
 
 ### Workspaces — `src/routes/v1/workspaces.ts`
 - `GET  /workspaces` — workspaces do usuário autenticado (via RLS)
-- `GET  /workspaces/:id/stats` — contadores para dashboard: `{ produtos, alertas, movimentacoes }` — alertas = produtos com qty < 10
-- `POST /workspaces` — cria workspace e adiciona criador como owner (usa supabaseAdmin)
+- `GET  /workspaces/:id/stats` — contadores para dashboard: `{ produtos, alertas, movimentacoes }` — alerta = zerado ou `qty <= min_qty` (mesma regra do `deriveStatus` do front)
+- `POST /workspaces` — valida o CPF **antes** de criar; cria workspace, owner e subscription; desfaz tudo se um passo falhar (usa supabaseAdmin)
 - `PATCH /workspaces/:id` — atualiza workspace
 - `DELETE /workspaces/:id` — exclui workspace (apenas owner); cascata apaga members, products e movements via FK
 
 ### Membros — `src/routes/v1/members.ts`
 - `GET  /members?workspace_id=xxx` — lista membros com perfil (usa supabaseAdmin + dois selects separados, pois não há FK entre workspace_members.user_id e profiles.id que o PostgREST aceite)
-- `POST /members/invite` — convida membro com lógica diferente por tipo de usuário:
-  - **Usuário novo**: cria conta via `inviteUserByEmail`, envia email de convite Supabase, status=pendente
-  - **Usuário não confirmado** (convidado mas nunca clicou no link): deleta conta antiga e re-convida
-  - **Usuário confirmado** (já tem conta ativa): gera magic link via `generateLink`, envia email customizado via nodemailer, status=pendente — ao clicar vai para `/aceitar-convite`
-  - Valida limite do plano (ativo + pendente contam juntos)
-  - Valida limite diário de convites por workspace (basic=10, growth=25, pro=50)
+- `POST /members/invite` — só owner/admin (só owner convida owner). Checa duplicidade **antes** de mandar e-mail:
+  - **Membro ativo**: 409, sem e-mail
+  - **Convite pendente no mesmo workspace**: reenvia o e-mail (200 "Convite reenviado"), atualizando o papel
+  - **Usuário novo**: `inviteUserByEmail` (Supabase manda o e-mail), status=pendente
+  - **Usuário não confirmado**: atualiza o metadata e reenvia o convite **sem apagar a conta** (apagar levava junto os convites dela em outros workspaces)
+  - **Usuário confirmado**: magic link (`signInWithOtp`) para `/aceitar-convite`; se o envio falhar, 500 e nada é gravado
+  - Valida limite do plano (ativo + pendente contam juntos; reenvio não ocupa vaga)
+  - Limite diário conta os e-mails enviados na tabela `invite_log` (basic=10, growth=25, pro=50), inclusive reenvios e convites revogados
 - `POST /members/accept` — usuário autenticado aceita convite pendente (`{ workspace_id }` → status=ativo)
-- `PATCH /members/:id` — atualiza role/status/perfil
+- `PATCH /members/:id?workspace_id=xxx` — atualiza role/status/perfil só naquele workspace (owner/admin; regras de owner na trigger `protect_workspace_owner`)
 - `DELETE /members/:id/invite?workspace_id=xxx` — revoga convite pendente; se nunca logou, deleta a conta também
 - `DELETE /members/:id?workspace_id=xxx` — remove membro ativo do workspace
 
 ### NFC-e — `src/routes/v1/nfe.ts`
 - `POST /nfe/consultar` — recebe `{ tipo: "nfce", chave: "44 dígitos" }` e retorna lista de itens (`{ chave, total_itens, itens[] }`)
+- `POST /nfe/importar` — `{ workspace_id, tipo, chave, itens[] }` (item com `product_id` soma no existente; sem, cria). Owner/admin, assinatura ativa, limite de produtos do plano. RPC `import_nota_fiscal` faz tudo numa transação e recusa a mesma chave no workspace (409 com a data da importação anterior)
 
 ## Planos — `src/lib/plans.ts`
 ```
@@ -110,6 +125,11 @@ O slug `intermediate` foi renomeado para `growth` — constraint e dados já atu
 - `products`          — id, workspace_id, name, code (NOT NULL), category, unit, price, qty, min_qty, max_qty, location, supplier, image_url, nota_fiscal, created_by, created_at, updated_at
 - `movements`         — id, product_id, delta, reason, created_by, created_at
 - `subscriptions`     — id, workspace_id, plan, status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_subscription_id, stripe_price_id, created_at, updated_at
+- `nota_imports`      — notas importadas: workspace_id, chave (única por workspace), tipo, itens, imported_by, created_at
+- `trial_grants`      — trials concedidos: user_id (único), cpf_hash SHA-256 (único), workspace_id, granted_at. RLS sem policies: só a API acessa
+- `invite_log`        — cada e-mail de convite enviado (workspace_id, invited_by, created_at), para o limite diário. RLS sem policies
+
+Trigger `protect_workspace_owner` (BEFORE UPDATE/DELETE em `workspace_members`): só owner promove alguém a owner ou altera/remove outro owner, e o workspace nunca fica sem owner ativo. Vale também para as escritas diretas do front; o service_role passa direto.
 
 ```sql
 -- CPF no perfil (rodar no Supabase SQL Editor se ainda não existir)
@@ -118,10 +138,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS profiles_cpf_unique ON public.profiles (cpf) W
 ```
 
 ### RPCs (funções Postgres)
-- `adjust_product_qty(p_product_id, p_delta, p_reason, p_user_id)` — ajuste atômico de estoque + insert em movements
-- `accept_workspace_invite()` — chamada pelo frontend em `/set-password` após definir senha; atualiza workspace_members.status para 'ativo'
+- `adjust_product_qty(p_product_id uuid, p_delta numeric, p_reason, p_user_id)` — ajuste atômico de estoque + insert em movements (uma única versão, numeric; o autor é `auth.uid()`)
+- `accept_workspace_invite()` — chamada pelo frontend em `/set-password` após definir senha; ativa só um convite **pendente que já existe** (o papel vem do convite, nunca do user_metadata); não aceita anon
+- `import_nota_fiscal(p_workspace_id, p_chave, p_tipo, p_itens jsonb)` — importação de nota numa transação (ver `/nfe/importar`)
 - `email_exists(p_email text) → boolean` — verifica se email existe em auth.users (usado no forgot-password)
-- `create_workspace(p_name text, p_plan text) → json` — **TEMPORÁRIA**, ver nota abaixo
+- A RPC antiga `invite_member` e a edge function `invite-member` foram removidas (2026-10-17)
 
 ## Rate limiting (server.ts)
 - Global: 200 req/min por usuário (userId do JWT) ou IP como fallback
@@ -136,8 +157,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS profiles_cpf_unique ON public.profiles (cpf) W
 - `sanitize.ts` — funções de sanitização por tipo (text, code, number, email)
 
 ## Banco de dados
-Schema completo em `database/schema.sql`.
-Para aplicar: Supabase Dashboard → SQL Editor → colar o arquivo → Run.
+Mudanças de schema ficam em `supabase/migrations/` (uma por arquivo, com o motivo no comentário).
+Para aplicar: MCP do Supabase (`apply_migration`) ou Supabase Dashboard → SQL Editor. O MCP recusa `DROP`/`DELETE`: esses o João cola no SQL Editor.
+`database/schema.sql` está desatualizado.
 
 ## Variáveis de ambiente
 Copiar `.env.example` → `.env` e preencher:
@@ -148,14 +170,9 @@ NODE_ENV=development
 SUPABASE_URL=https://SEU_PROJETO.supabase.co
 SUPABASE_ANON_KEY=sua_anon_key_aqui
 SUPABASE_SERVICE_ROLE_KEY=sua_service_role_key_aqui   # NUNCA expor no frontend
-ALLOWED_ORIGINS=http://localhost:3000
-
-# Gmail SMTP — mesmo email/app-password configurado no Supabase
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=seu@gmail.com
-SMTP_PASS=sua_app_password_16_chars
+ALLOWED_ORIGINS=http://localhost:3000   # em produção o 1º é https://www.estoquizen.com.br (links de e-mail e volta do Stripe)
 ```
+As variáveis `SMTP_*` não são mais usadas (o `mailer.ts` foi removido).
 
 ## Frontend (../estoquizen-frontend)
 - Next.js App Router + TypeScript
@@ -195,10 +212,10 @@ SMTP_PASS=sua_app_password_16_chars
 - **Estoque atômico**: ajuste via RPC Postgres evita race condition em ambientes com múltiplos usuários simultâneos
 - **Stats via join**: movements não tem workspace_id; join com products (`products!inner(workspace_id)`) é necessário para contar movimentações por workspace
 - **GET /members usa dois selects**: PostgREST não aceita join `profiles(...)` pois não há FK explícita entre `workspace_members.user_id` e `profiles.id` — solução é buscar members e profiles separadamente e fazer merge no código
-- **Invite flow separado por tipo de usuário**: novo → `inviteUserByEmail` (Supabase envia email); não-confirmado → deleta + re-convida; confirmado → `generateLink` + nodemailer (email customizado com magic link)
+- **Invite flow separado por tipo de usuário**: novo → `inviteUserByEmail`; não-confirmado → reenvia o convite sem apagar a conta; confirmado → magic link (`signInWithOtp`) para `/aceitar-convite`
 - **PKCE flow**: Supabase usa `?code=` na URL (não hash `#type=recovery`). Sempre usar `exchangeCodeForSession(code)` explicitamente. O `onAuthStateChange` sozinho não é suficiente
 - **Reset password sem passar pelo /auth/callback**: `redirectTo` do `resetPasswordForEmail` aponta direto para `/reset-password`, que troca o code ele mesmo. Evita conflito com `from_invite` no user_metadata de usuários que foram convidados antes
-- **Gmail SMTP**: Supabase configurado com Gmail SMTP (500 emails/dia). Mesmo app-password usado nas vars SMTP_PASS da API Railway
+- **E-mail com domínio próprio**: Supabase Auth usa o SMTP do Resend (`smtp.resend.com`, remetente `noreply@estoquizen.com.br`, SPF/DKIM/DMARC ok). O Gmail gratuito de antes mandava os convites para o spam
 
 ---
 
@@ -222,8 +239,9 @@ SMTP_PASS=sua_app_password_16_chars
 
 ### Modelo de trial
 - **Apenas o plano `growth` tem trial gratuito** — `basic` e `pro` exigem pagamento imediato
-- Trial é **1 por CPF** — verificado via `profiles.cpf` (unique index); se CPF já foi usado em outro workspace, `hasTrial = false`
-- CPF é **obrigatório** para todos os planos na criação do workspace; salvo em `profiles.cpf` (só na primeira vez — não sobrescreve)
+- Trial é **1 por pessoa e 1 por CPF** — a API tenta inserir em `trial_grants` (índices únicos em user_id e no hash do CPF); se der conflito, cria sem trial. CPF de outra conta também fica sem trial
+- CPF é **obrigatório** para todos os planos e validado antes de criar o workspace; salvo em `profiles.cpf` (só na primeira vez — não sobrescreve)
+- Workspace **sem** linha em `subscriptions` criado a partir de 2026-10-01 é bloqueado por `assertActiveSubscription`; os de antes do sistema de assinaturas (ex.: "Assai Atacadista") seguem liberados
 - O Stripe **não é criado durante o trial** — a assinatura é puramente local no banco
 - O Stripe só entra quando o usuário decide pagar
 
@@ -294,15 +312,17 @@ Também configurar nos Products/Prices do Stripe Dashboard:
 Price metadata: { plan: "growth", interval: "monthly" }
 ```
 
-### Rotas de billing (novas — `src/routes/v1/billing.ts`)
+### Rotas de billing (`src/routes/v1/billing.ts`)
 ```
-POST /billing/checkout          — cria Stripe Checkout Session (redireciona para pagar)
-POST /billing/portal            — cria Customer Portal Session (gerenciar assinatura)
-POST /billing/cancel            — define cancel_at_period_end = true (não cancela imediato)
-POST /billing/upgrade           — troca de plano (Stripe faz prorata automático)
-GET  /billing/subscription      — retorna estado atual da assinatura do workspace
+GET  /billing/subscription      — estado da assinatura (qualquer membro)
+POST /billing/checkout          — cria Stripe Checkout Session (só owner)
+POST /billing/portal            — cria Customer Portal Session (só owner)
 POST /webhooks/stripe           — recebe eventos do Stripe
 ```
+Não existem `/billing/cancel` nem `/billing/upgrade`: cancelamento e cartão ficam no portal.
+**Pendente (SCRUM-47 parte 2):** quem já assina e clica em upgrade ganha uma **segunda assinatura** pelo checkout.
+O código que manda essas pessoas para a tela de confirmação do portal (`subscription_update_confirm`)
+está escrito, mas não commitado, até ligarem "Clientes podem trocar de plano" no portal do Stripe.
 
 **CRÍTICO no webhook:**
 - Rota `/webhooks/stripe` **NÃO tem** `preHandler: [fastify.authenticate]` — o Stripe não envia JWT
@@ -319,6 +339,14 @@ POST /webhooks/stripe           — recebe eventos do Stripe
 | `invoice.payment_failed` | `status = past_due` (não bloqueia ainda — Stripe vai retentar) |
 | `customer.subscription.updated` | Atualiza `plan`, `status`, `cancel_at_period_end`, `stripe_price_id` |
 | `customer.subscription.deleted` | `status = canceled` — acesso limitado a leitura |
+
+Detalhes da API `2026-03-25.dahlia` (SCRUM-46 e 47):
+- `current_period_end` fica em `items.data[0]`, não na Subscription; a fatura aponta a assinatura em `parent.subscription_details`
+- o plano vem do **preço** (`PRICE_IDS`); o metadata guarda só o plano da compra
+- `unpaid`/`paused` → `canceled`; `incomplete` não altera o status (a tabela não aceita esses status)
+- `cancel_at` (cancelamento agendado pelo portal) conta como `cancel_at_period_end`
+- `updated`/`deleted`/`payment_failed` de uma assinatura que não é a gravada no workspace são ignorados
+- erro ao gravar responde 500, para o Stripe reenviar o evento
 
 ### Grace period após falha de pagamento
 - **Delegar ao Stripe Smart Retries** (configurar no Stripe Dashboard: 3 tentativas em ~7 dias)
@@ -376,17 +404,5 @@ CRON_SECRET=...                        # segredo para chamar POST /admin/cleanup
 15. Webhook cadastrado no Stripe Dashboard com eventos: `checkout.session.completed`, `customer.subscription.deleted/updated`, `invoice.paid`, `invoice.payment_failed`
 
 #### 🔜 Pendente
-- Nenhum pendente no backend
-
-### ✅ RPC `invite_member` — substituída pela rota da API
-
-O convite de membros é gerenciado inteiramente pela rota `POST /members/invite` no Railway:
-- Usuário novo → `inviteUserByEmail` (Supabase envia email)
-- Usuário não confirmado → deleta + re-convida
-- Usuário confirmado → `signInWithOtp` (magic link via Supabase, sem nodemailer)
-Não há dependência de Edge Function ou RPC para o fluxo de convite.
-
-### ✅ RPCs permanentes no Supabase
-- `accept_workspace_invite()` — chamada pelo frontend em `/set-password` após definir senha
-- `email_exists(p_email)` — chamada pelo frontend em `/forgot-password` para verificar cadastro
-- `adjust_product_qty(...)` — ajuste atômico de estoque
+- Troca de plano sem segunda assinatura (SCRUM-47 parte 2) — ver "Rotas de billing"
+- Lista completa de tarefas: quadro do projeto no Obsidian (`Projetos/Estoquizen - Quadro.md`)
