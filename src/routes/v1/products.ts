@@ -73,14 +73,16 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
       ));
     }
 
-    const initialQty = parsed.data.qty ?? 0;
+    /* qty fica fora do insert: o estoque inicial entra pela RPC, que grava a movimentação
+       (e o banco só deixa a RPC mexer em qty) */
+    const { qty: initialQty = 0, ...fields } = parsed.data;
 
     /* code é optional no schema mas NOT NULL no banco — gera um código único quando não informado */
     const code = parsed.data.code ?? `AUTO-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 
     const { data, error } = await db
       .from("products")
-      .insert({ ...parsed.data, code, source_name: parsed.data.name, qty: 0, created_by: req.user.id })
+      .insert({ ...fields, code, source_name: fields.name, created_by: req.user.id })
       .select()
       .single();
 

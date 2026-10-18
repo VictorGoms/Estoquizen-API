@@ -14,9 +14,9 @@ export const CreateProductSchema = z.object({
   qty:          z.number().nonnegative("Quantidade não pode ser negativa").transform(round(3)).default(0),
   min_qty:      z.number().nonnegative().transform(round(3)).default(0),
   max_qty:      z.number().nonnegative().transform(round(3)).optional(),
-  location:     str(200).optional(),
+  location:     z.nullable(str(200)).optional(),  /* null limpa o campo */
   category:     str(60).optional(),
-  supplier:     str(200).optional(),
+  supplier:     z.nullable(str(200)).optional(),
   image_url:    z.nullable(z.string().url()).optional(),
   workspace_id: z.string().uuid("workspace_id inválido"),
 });
