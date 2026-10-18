@@ -15,12 +15,14 @@ export const CreateProductSchema = z.object({
   min_qty:      z.number().nonnegative().transform(round(3)).default(0),
   max_qty:      z.number().nonnegative().transform(round(3)).optional(),
   location:     str(200).optional(),
+  category:     str(60).optional(),
   supplier:     str(200).optional(),
   image_url:    z.nullable(z.string().url()).optional(),
   workspace_id: z.string().uuid("workspace_id inválido"),
 });
 
-export const UpdateProductSchema = CreateProductSchema.partial().omit({ workspace_id: true });
+/* Sem qty: estoque só muda por /adjust, que grava a movimentação (o PATCH mudava sem histórico) */
+export const UpdateProductSchema = CreateProductSchema.partial().omit({ workspace_id: true, qty: true });
 
 export const AdjustQtySchema = z.object({
   delta:  z.number().transform(round(3)).refine((d) => d !== 0, "A quantidade deve ser diferente de zero"),
