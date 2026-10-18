@@ -4,6 +4,10 @@ import type { FastifyReply } from "fastify";
 
 const BLOCKED = ["trial_expired", "canceled", "deleted"];
 
+/* Workspaces de antes do sistema de assinaturas (abril/2026) não têm linha em subscriptions e
+   continuam liberados. Os criados depois sempre ganham uma ao nascer: sem ela, bloqueia. */
+const LEGACY_BEFORE = new Date("2026-10-01T00:00:00Z");
+
 /**
  * Verifica se o workspace tem assinatura ativa.
  * Retorna false e envia 403 se estiver bloqueado.
@@ -19,7 +23,17 @@ export async function assertActiveSubscription(
     .eq("workspace_id", workspaceId)
     .maybeSingle();
 
-  if (!sub) return true; // workspace sem subscription (legado) — deixa passar
+  if (!sub) {
+    const { data: ws } = await supabaseAdmin
+      .from("workspaces")
+      .select("created_at")
+      .eq("id", workspaceId)
+      .maybeSingle();
+    if (ws && new Date(ws.created_at) < LEGACY_BEFORE) return true;
+
+    reply.status(403).send(fail("Este workspace não tem assinatura. Escolha um plano para continuar."));
+    return false;
+  }
 
   if (BLOCKED.includes(sub.status)) {
     reply.status(403).send(fail(

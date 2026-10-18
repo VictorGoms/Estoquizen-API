@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
+import { createHash } from "node:crypto";
 import { CreateWorkspaceSchema, UpdateWorkspaceSchema } from "../../schemas/workspace.schema.js";
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { ok, fail, dbError } from "../../lib/response.js";
@@ -49,6 +50,21 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
 
     const { cpf: cpfRawInput, ...workspaceFields } = parsed.data;
 
+    /* CPF obrigatório e validado antes de criar qualquer coisa: com CPF inválido o workspace
+       ficava criado sem assinatura, e sem assinatura não havia bloqueio nenhum */
+    const cpf = sanitizeCpf(cpfRawInput ?? "");
+    if (!cpf) {
+      return reply.status(400).send(fail("CPF inválido. Informe um CPF válido para continuar."));
+    }
+
+    /* CPF já cadastrado por outra conta: cria o workspace, mas sem trial */
+    const { data: cpfOwner } = await supabaseAdmin
+      .from("profiles")
+      .select("id")
+      .eq("cpf", cpf)
+      .neq("id", req.user.id)
+      .maybeSingle();
+
     const { data: ws, error: wsErr } = await supabaseAdmin
       .from("workspaces")
       .insert({ ...workspaceFields, created_by: req.user.id })
@@ -57,52 +73,43 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (wsErr) return reply.status(500).send(fail(dbError(wsErr)));
 
+    /* Desfaz o que já foi criado se um passo seguinte falhar (cascade apaga membros e assinatura) */
+    const rollback = async (err: { message: string }) => {
+      req.log.error({ err, workspace_id: ws.id }, "falha ao criar workspace; desfazendo");
+      await supabaseAdmin.from("trial_grants").delete().eq("workspace_id", ws.id);
+      await supabaseAdmin.from("workspaces").delete().eq("id", ws.id);
+      return reply.status(500).send(fail(dbError(err)));
+    };
+
     const { error: memberErr } = await supabaseAdmin
       .from("workspace_members")
       .insert({ workspace_id: ws.id, user_id: req.user.id, role: "owner", status: "ativo" });
 
-    if (memberErr) return reply.status(500).send(fail(dbError(memberErr)));
-
-    /* Valida e salva CPF — obrigatório para todos os planos */
-    const cpfRaw = cpfRawInput ?? "";
-    const cpf    = sanitizeCpf(cpfRaw);
-    if (!cpf) {
-      return reply.status(400).send(fail("CPF inválido. Informe um CPF válido para continuar."));
-    }
+    if (memberErr) return rollback(memberErr);
 
     /* Salva CPF no perfil (só na primeira vez — não sobrescreve) */
-    await supabaseAdmin
-      .from("profiles")
-      .update({ cpf })
-      .eq("id", req.user.id)
-      .is("cpf", null);
-
-    /* Apenas o plano growth tem trial gratuito — basic e pro exigem pagamento imediato */
-    const plan = parsed.data.plan ?? "basic";
-    let hasTrial = plan === "growth";
-
-    if (hasTrial) {
-      /* Verifica se este CPF já usou um trial em qualquer workspace */
-      const { data: existingCpf } = await supabaseAdmin
+    if (!cpfOwner) {
+      await supabaseAdmin
         .from("profiles")
-        .select("id")
-        .eq("cpf", cpf)
-        .neq("id", req.user.id) // ignora o próprio usuário
-        .maybeSingle();
+        .update({ cpf })
+        .eq("id", req.user.id)
+        .is("cpf", null);
+    }
 
-      if (existingCpf) {
-        hasTrial = false; // CPF já cadastrado por outro usuário → sem trial
-      } else {
-        /* Verifica se o próprio usuário já teve trial em outro workspace */
-        const { data: previousSub } = await supabaseAdmin
-          .from("workspace_members")
-          .select("workspace_id, subscriptions!inner(status)")
-          .eq("user_id", req.user.id)
-          .eq("role", "owner")
-          .maybeSingle();
+    /* Apenas o plano growth tem trial gratuito — basic e pro exigem pagamento imediato.
+       1 trial por pessoa e por CPF: os índices únicos de trial_grants tornam a concessão atômica
+       (antes a checagem usava um embed inexistente e todo workspace novo ganhava trial). */
+    const plan = parsed.data.plan ?? "basic";
+    let hasTrial = false;
 
-        if (previousSub) hasTrial = false;
-      }
+    if (plan === "growth" && !cpfOwner) {
+      const { error: grantErr } = await supabaseAdmin.from("trial_grants").insert({
+        user_id:      req.user.id,
+        cpf_hash:     createHash("sha256").update(cpf).digest("hex"),
+        workspace_id: ws.id,
+      });
+      if (!grantErr) hasTrial = true;
+      else if (grantErr.code !== "23505") req.log.error({ err: grantErr }, "falha ao registrar trial");
     }
 
     const trialDays   = new Date(ws.created_at) < new Date("2026-06-30") ? 30 : 14;
@@ -110,12 +117,14 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
       ? new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toISOString()
       : null;
 
-    await supabaseAdmin.from("subscriptions").insert({
+    const { error: subErr } = await supabaseAdmin.from("subscriptions").insert({
       workspace_id:  ws.id,
       plan,
       status:        hasTrial ? "trialing" : "trial_expired",
       trial_ends_at: trialEndsAt,
     });
+
+    if (subErr) return rollback(subErr);
 
     return reply.status(201).send(ok(ws));
   });
