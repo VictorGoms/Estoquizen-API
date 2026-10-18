@@ -107,7 +107,7 @@ database/
 - `DELETE /members/:id?workspace_id=xxx` — remove membro ativo do workspace
 
 ### NFC-e — `src/routes/v1/nfe.ts`
-- `POST /nfe/consultar` — recebe `{ tipo: "nfce", chave: "44 dígitos" }` e retorna lista de itens (`{ chave, total_itens, itens[] }`)
+- `POST /nfe/consultar` — recebe `{ tipo: "nfce", chave: "44 dígitos", workspace_id }` e retorna lista de itens (`{ chave, total_itens, itens[] }`). Owner/admin e plano com `nfe`
 - `POST /nfe/importar` — `{ workspace_id, tipo, chave, itens[] }` (item com `product_id` soma no existente; sem, cria). Owner/admin, assinatura ativa, limite de produtos do plano. RPC `import_nota_fiscal` faz tudo numa transação e recusa a mesma chave no workspace (409 com a data da importação anterior)
 
 ## Planos — `src/lib/plans.ts`
@@ -117,6 +117,7 @@ growth → R$29,90/mês → 300 produtos,  7 membros,  25 convites/dia
 pro    → R$59,90/mês → 2000 produtos, 12 membros, 50 convites/dia
 ```
 Limites verificados no servidor em `POST /products` e `POST /members/invite`.
+Recursos por plano (SCRUM-57, o que a tela de planos promete): `nfe` (importação de nota) e `metricas` só no Growth e no Pro. A API barra `/nfe/*` no Basic e a RPC `import_nota_fiscal` também; as métricas são barradas no front (`usePlan`).
 O slug `intermediate` foi renomeado para `growth` — constraint e dados já atualizados no Supabase.
 
 ## Tabelas do Supabase
