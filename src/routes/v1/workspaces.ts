@@ -33,14 +33,19 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
     const token  = req.headers.authorization!.slice(7);
     const db     = supabaseForUser(token);
 
-    const [{ count: produtos }, { count: alertas }, { count: movimentacoes }] = await Promise.all([
-      db.from("products").select("id", { count: "exact", head: true }).eq("workspace_id", id),
-      db.from("products").select("id", { count: "exact", head: true }).eq("workspace_id", id).lt("qty", 10),
+    const [{ data: estoque }, { count: movimentacoes }] = await Promise.all([
+      db.from("products").select("qty, min_qty").eq("workspace_id", id),
       db.from("movements").select("id, products!inner(workspace_id)", { count: "exact", head: true })
         .eq("products.workspace_id", id),
     ]);
 
-    return reply.send(ok({ produtos: produtos ?? 0, alertas: alertas ?? 0, movimentacoes: movimentacoes ?? 0 }));
+    /* Mesma regra do front (deriveStatus): alerta = zerado ou no mínimo/abaixo dele.
+       Antes era qty < 10, que ignorava o mínimo de cada produto. O PostgREST não compara
+       duas colunas, então a conta é feita aqui. */
+    const produtos = estoque ?? [];
+    const alertas  = produtos.filter((p) => Number(p.qty) <= 0 || Number(p.qty) <= Number(p.min_qty)).length;
+
+    return reply.send(ok({ produtos: produtos.length, alertas, movimentacoes: movimentacoes ?? 0 }));
   });
 
   /* POST /workspaces — cria workspace, owner e subscription de trial */
