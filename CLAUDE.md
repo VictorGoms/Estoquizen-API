@@ -112,12 +112,12 @@ database/
 
 ## Planos — `src/lib/plans.ts`
 ```
-basic  → R$19,90/mês → 50 produtos,   3 membros,  10 convites/dia
-growth → R$29,90/mês → 300 produtos,  7 membros,  25 convites/dia
-pro    → R$59,90/mês → 2000 produtos, 12 membros, 50 convites/dia
+basic  → R$19,90/mês → 50 produtos,   3 membros,       10 convites/dia, 2 notas/mês,  métricas 30 dias
+growth → R$29,90/mês → 300 produtos,  10 membros,      25 convites/dia, notas livres, métricas 3 meses
+pro    → R$59,90/mês → 2000 produtos, membros sem limite, 50 convites/dia, notas livres, métricas 12 meses
 ```
 Limites verificados no servidor em `POST /products` e `POST /members/invite`.
-Recursos por plano (SCRUM-57, o que a tela de planos promete): `nfe` (importação de nota) e `metricas` só no Growth e no Pro. A API barra `/nfe/*` no Basic e a RPC `import_nota_fiscal` também; as métricas são barradas no front (`usePlan`).
+Planos fechados pelo João em 2026-10-17 (EQZ-27, substitui o SCRUM-57): equipe 3/10/sem limite, Basic lê até 2 notas de compra por mês (cota conferida em `/nfe/*` e na RPC `import_nota_fiscal`, mês no horário de Brasília) e métricas de 30 dias/3 meses/12 meses (aplicadas no front, `usePlan`). Os preços novos da tabela (Basic R$ 24,90, Growth R$ 39,90) ainda não foram aplicados: dependem de preços novos no Stripe.
 O slug `intermediate` foi renomeado para `growth` — constraint e dados já atualizados no Supabase.
 
 ## Tabelas do Supabase
@@ -241,8 +241,8 @@ As variáveis `SMTP_*` não são mais usadas (o `mailer.ts` foi removido).
 | Slug no banco | Label | Preço | Produtos | Membros |
 |---|---|---|---|---|
 | `basic` | Basic | R$19,90/mês | 50 | 3 |
-| `growth` | Growth | R$29,90/mês | 300 | 7 |
-| `pro` | Pro | R$59,90/mês | 2000 | 12 |
+| `growth` | Growth | R$29,90/mês | 300 | 10 |
+| `pro` | Pro | R$59,90/mês | 2000 | sem limite |
 
 ### Modelo de trial
 - **Apenas o plano `growth` tem trial gratuito** — `basic` e `pro` exigem pagamento imediato
