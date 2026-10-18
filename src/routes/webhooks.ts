@@ -50,6 +50,18 @@ async function updateWorkspacePlan(wsId: string, plan: string) {
   if (error) throw new Error(`workspaces (${wsId}): ${error.message}`);
 }
 
+/* Eventos de uma assinatura que não é a atual do workspace (ex.: a antiga, depois de assinar de novo)
+   não podem mexer no status. Sem assinatura gravada ainda, aceita. */
+async function isCurrentSubscription(wsId: string, subId: string): Promise<boolean> {
+  const { data, error } = await supabaseAdmin
+    .from("subscriptions")
+    .select("stripe_subscription_id")
+    .eq("workspace_id", wsId)
+    .maybeSingle();
+  if (error) throw new Error(`subscriptions (${wsId}): ${error.message}`);
+  return !data?.stripe_subscription_id || data.stripe_subscription_id === subId;
+}
+
 function invoiceSubscriptionId(invoice: Stripe.Invoice): string | undefined {
   const ref = invoice.parent?.subscription_details?.subscription;
   return typeof ref === "string" ? ref : ref?.id;
@@ -130,7 +142,7 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
 
           const sub  = await stripe.subscriptions.retrieve(subId);
           const wsId = sub.metadata?.workspace_id;
-          if (!wsId) break;
+          if (!wsId || !await isCurrentSubscription(wsId, subId)) break;
 
           await updateSubscription(wsId, { status: "past_due" });
           fastify.log.info({ wsId, subId }, "invoice.payment_failed → past_due");
@@ -140,7 +152,7 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         case "customer.subscription.updated": {
           const sub  = event.data.object as Stripe.Subscription;
           const wsId = sub.metadata?.workspace_id;
-          if (!wsId) break;
+          if (!wsId || !await isCurrentSubscription(wsId, sub.id)) break;
 
           const plan   = planOf(sub);
           const status = mapStatus(sub.status);
@@ -162,7 +174,7 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         case "customer.subscription.deleted": {
           const sub  = event.data.object as Stripe.Subscription;
           const wsId = sub.metadata?.workspace_id;
-          if (!wsId) break;
+          if (!wsId || !await isCurrentSubscription(wsId, sub.id)) break;
 
           await updateSubscription(wsId, { status: "canceled" });
           fastify.log.info({ wsId, subId: sub.id }, "customer.subscription.deleted → canceled");
