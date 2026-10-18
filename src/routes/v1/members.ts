@@ -226,11 +226,16 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send(ok({ message: "Convite aceito" }));
   });
 
-  /* PATCH /members/:id */
+  /* PATCH /members/:id?workspace_id=xxx — :id é o user_id do membro */
   fastify.patch("/members/:id", authWrite, async (req, reply) => {
     const { id } = req.params as { id: string };
+    const { workspace_id } = req.query as { workspace_id?: string };
+    if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
+
     const parsed = UpdateMemberSchema.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
+
+    if (!await requireMember(workspace_id, req.user.id, reply, ["owner", "admin"])) return;
 
     const token = req.headers.authorization!.slice(7);
     const db    = supabaseForUser(token);
@@ -244,9 +249,18 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
         .eq("id", id);
     }
 
-    /* Atualiza role/status na tabela de membros */
+    /* Atualiza role/status só neste workspace (antes atualizava o membro em todos os workspaces
+       onde o requisitante é admin). Regras de owner ficam na trigger protect_workspace_owner. */
     if (Object.keys(memberFields).length > 0) {
-      await db.from("workspace_members").update(memberFields).eq("user_id", id);
+      const { error } = await db
+        .from("workspace_members")
+        .update(memberFields)
+        .eq("user_id", id)
+        .eq("workspace_id", workspace_id);
+      if (error) {
+        const status = error.code === "42501" ? 403 : 500;
+        return reply.status(status).send(fail(status === 403 ? error.message : dbError(error)));
+      }
     }
     return reply.send(ok({ message: "Membro atualizado" }));
   });
@@ -316,7 +330,11 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
       .eq("user_id", id)
       .eq("workspace_id", workspace_id);
 
-    if (error) return reply.status(500).send(fail(dbError(error)));
+    /* 42501 = bloqueio da trigger protect_workspace_owner (mensagem já é para o usuário) */
+    if (error) {
+      const status = error.code === "42501" ? 403 : 500;
+      return reply.status(status).send(fail(status === 403 ? error.message : dbError(error)));
+    }
     return reply.status(204).send();
   });
 };
