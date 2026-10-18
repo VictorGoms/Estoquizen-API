@@ -316,10 +316,11 @@ Price metadata: { plan: "growth", interval: "monthly" }
 ```
 GET  /billing/subscription      — estado da assinatura (qualquer membro)
 POST /billing/checkout          — cria Stripe Checkout Session (só owner)
-POST /billing/portal            — cria Customer Portal Session (só owner)
+POST /billing/portal            — cria Customer Portal Session (só owner); { flow: "cancel" } abre direto o cancelamento
 POST /webhooks/stripe           — recebe eventos do Stripe
 ```
-Não existem `/billing/cancel` nem `/billing/upgrade`: cancelamento e cartão ficam no portal.
+Não existem `/billing/cancel` nem `/billing/upgrade`: cancelamento e cartão ficam no portal (em pt-BR).
+Cancelar a assinatura (fim do ciclo, dados ficam) e excluir o workspace (`DELETE /workspaces/:id`, apaga tudo e cancela na hora) são ações separadas no front (SCRUM-63).
 **Pendente (SCRUM-47 parte 2):** quem já assina e clica em upgrade ganha uma **segunda assinatura** pelo checkout.
 O código que manda essas pessoas para a tela de confirmação do portal (`subscription_update_confirm`)
 está escrito, mas não commitado, até ligarem "Clientes podem trocar de plano" no portal do Stripe.

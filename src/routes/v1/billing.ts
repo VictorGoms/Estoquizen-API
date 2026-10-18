@@ -73,6 +73,7 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
     const session = await stripe.checkout.sessions.create({
       customer:   customerId,
       mode:       "subscription",
+      locale:     "pt-BR",
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: `${siteUrl}/select-workspace?checkout=success`,
       cancel_url:  `${siteUrl}/select-workspace?checkout=canceled`,
@@ -85,16 +86,19 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send(ok({ url: session.url }));
   });
 
-  /* POST /billing/portal — Customer Portal para gerenciar assinatura */
+  /* POST /billing/portal — Customer Portal para gerenciar assinatura.
+     Com { flow: "cancel" } abre direto a tela de cancelamento, que vale no fim do ciclo pago
+     (o portal está em at_period_end). Excluir o workspace é outra coisa: DELETE /workspaces/:id. */
   fastify.post("/billing/portal", auth, async (req, reply) => {
-    const { workspace_id } = req.body as { workspace_id?: string };
+    const { workspace_id, flow } = req.body as { workspace_id?: string; flow?: string };
     if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
+    if (flow !== undefined && flow !== "cancel") return reply.status(400).send(fail("flow inválido"));
 
     if (!await requireMember(workspace_id, req.user.id, reply, ["owner"], OWNER_ONLY)) return;
 
     const { data: sub } = await supabaseAdmin
       .from("subscriptions")
-      .select("stripe_customer_id")
+      .select("stripe_customer_id, stripe_subscription_id, status, cancel_at_period_end")
       .eq("workspace_id", workspace_id)
       .maybeSingle();
 
@@ -102,14 +106,38 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(400).send(fail("Nenhuma assinatura ativa. Assine um plano primeiro."));
     }
 
+    if (flow === "cancel") {
+      if (!sub.stripe_subscription_id || !["active", "past_due"].includes(sub.status)) {
+        return reply.status(400).send(fail("Não há assinatura paga para cancelar."));
+      }
+      if (sub.cancel_at_period_end) {
+        return reply.status(409).send(fail("O cancelamento já está agendado para o fim do ciclo."));
+      }
+    }
+
     const siteUrl = (process.env.ALLOWED_ORIGINS ?? "https://estoquizen.vercel.app").split(",")[0].trim();
 
-    const session = await stripe.billingPortal.sessions.create({
-      customer:   sub.stripe_customer_id,
-      return_url: `${siteUrl}/dashboard`,
-    });
-
-    return reply.send(ok({ url: session.url }));
+    try {
+      const session = await stripe.billingPortal.sessions.create({
+        customer:   sub.stripe_customer_id,
+        locale:     "pt-BR",
+        return_url: flow === "cancel" ? `${siteUrl}/configuracoes` : `${siteUrl}/dashboard`,
+        ...(flow === "cancel" && {
+          flow_data: {
+            type: "subscription_cancel",
+            subscription_cancel: { subscription: sub.stripe_subscription_id! },
+            after_completion: {
+              type:     "redirect",
+              redirect: { return_url: `${siteUrl}/configuracoes?assinatura=cancelada` },
+            },
+          },
+        }),
+      });
+      return reply.send(ok({ url: session.url }));
+    } catch (err) {
+      req.log.error({ err, workspace_id, flow }, "falha ao abrir o portal do Stripe");
+      return reply.status(502).send(fail("Não foi possível abrir o portal de cobrança. Tente novamente."));
+    }
   });
 };
 

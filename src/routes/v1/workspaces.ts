@@ -157,7 +157,8 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   /**
-   * DELETE /workspaces/:id — Encerrar assinatura e excluir workspace.
+   * DELETE /workspaces/:id — Excluir workspace (cancela na hora a assinatura do Stripe, se houver).
+   * Cancelar só a assinatura, mantendo os dados, é pelo portal: POST /billing/portal { flow: "cancel" }.
    *
    * Regras:
    *  - Apenas o owner pode excluir.
@@ -182,7 +183,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     if (membership.role !== "owner") {
-      return reply.status(403).send(fail("Apenas o owner pode encerrar a assinatura."));
+      return reply.status(403).send(fail("Apenas o owner pode excluir o workspace."));
     }
 
     /* 2. Cancela assinatura no Stripe se houver */

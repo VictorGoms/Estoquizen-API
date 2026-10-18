@@ -46,7 +46,8 @@ export async function sendExpirationWarningEmail(params: {
           O workspace <strong style="color:#e2e8f0">${workspaceName}</strong> será excluído em<br>
           <strong style="color:#F59E0B;font-size:18px">${daysUntilDelete} dias</strong><br>
           por falta de assinatura ativa.<br><br>
-          Todos os seus produtos, movimentações e membros serão perdidos permanentemente.
+          Todos os seus produtos, movimentações e membros serão perdidos permanentemente.<br><br>
+          Para guardar uma cópia, exporte os dados em <strong style="color:#e2e8f0">Configurações → Exportar dados</strong>.
         </td></tr>
         <tr><td align="center" style="padding-bottom:24px">
           <a href="${siteUrl}/dashboard"
