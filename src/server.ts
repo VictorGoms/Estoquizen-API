@@ -1,4 +1,5 @@
 import "dotenv/config";
+import "./lib/zodPt.js";
 import Fastify from "fastify";
 import cors       from "@fastify/cors";
 import helmet     from "@fastify/helmet";
@@ -33,7 +34,8 @@ fastify.addContentTypeParser("application/json", { parseAs: "buffer" }, function
   try {
     done(null, JSON.parse((body as Buffer).toString("utf8")));
   } catch {
-    done(new Error("Invalid JSON"));
+    /* Sem statusCode o erro virava 500; JSON malformado é erro de quem chamou */
+    done(Object.assign(new Error("Invalid JSON"), { statusCode: 400 }));
   }
 });
 
@@ -79,10 +81,31 @@ await fastify.register(rateLimit, {
     }
     return req.ip;
   },
+  /* O plugin lança este objeto: sem statusCode, o erro saía como 500 em vez de 429 */
   errorResponseBuilder: () => ({
-    data:  null,
-    error: "Muitas requisições. Aguarde um momento e tente novamente.",
+    statusCode: 429,
+    data:       null,
+    error:      "Muitas requisições. Aguarde um momento e tente novamente.",
   }),
+});
+
+/* ── Erros: sempre { data, error } em português; 5xx vão para o log ── */
+fastify.setNotFoundHandler((_req, reply) => {
+  reply.status(404).send({ data: null, error: "Rota não encontrada." });
+});
+
+fastify.setErrorHandler((err, req, reply) => {
+  const status = err.statusCode && err.statusCode >= 400 ? err.statusCode : 500;
+  if (status >= 500) req.log.error({ err, method: req.method, url: req.url }, "erro não tratado");
+
+  const message =
+    status === 429                      ? "Muitas requisições. Aguarde um momento e tente novamente." :
+    err.message === "Invalid JSON"      ? "O corpo da requisição não é um JSON válido." :
+    err.code === "FST_ERR_CTP_EMPTY_JSON_BODY" ? "O corpo da requisição está vazio." :
+    status >= 500                       ? "Erro interno. Tente novamente." :
+    err.message;
+
+  reply.status(status).send({ data: null, error: message });
 });
 
 /* ── Documentação automática (disponível em /docs) ── */

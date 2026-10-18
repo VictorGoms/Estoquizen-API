@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { ok, fail, dbError } from "../../lib/response.js";
+import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { consultarNfce } from "../../lib/nfce.js";
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { sanitizeText, sanitizeCode } from "../../lib/sanitize.js";
@@ -108,7 +108,7 @@ const nfeRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.status(400).send(fail(error.message));
       }
       req.log.error({ err: error, workspace_id }, "falha ao importar nota fiscal");
-      return reply.status(500).send(fail(dbError(error)));
+      return sendDbError(req, reply, error);
     }
 
     return reply.status(201).send(ok(data));

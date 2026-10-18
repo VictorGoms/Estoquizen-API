@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { InviteMemberSchema, UpdateMemberSchema } from "../../schemas/member.schema.js";
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
-import { ok, fail, dbError } from "../../lib/response.js";
+import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { getLimits } from "../../lib/plans.js";
 import { assertActiveSubscription } from "../../lib/checkSubscription.js";
 import { requireMember } from "../../lib/membership.js";
@@ -24,7 +24,7 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
       .eq("workspace_id", workspace_id)
       .order("created_at");
 
-    if (membersErr) return reply.status(500).send(fail(dbError(membersErr)));
+    if (membersErr) return sendDbError(req, reply, membersErr);
 
     const userIds = (memberRows ?? []).map((r) => r.user_id);
     const profileMap = new Map<string, Record<string, unknown>>();
@@ -196,7 +196,7 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
         invited_by: req.user.id,
       });
 
-    if (memberErr) return reply.status(500).send(fail(dbError(memberErr)));
+    if (memberErr) return sendDbError(req, reply, memberErr);
 
     return reply.status(201).send(ok({ message: `Convite enviado para ${email}.` }));
   });
@@ -221,7 +221,7 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
       .update({ status: "ativo" })
       .eq("id", membership.id);
 
-    if (error) return reply.status(500).send(fail(dbError(error)));
+    if (error) return sendDbError(req, reply, error);
     return reply.send(ok({ message: "Convite aceito" }));
   });
 
@@ -256,10 +256,8 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
         .update(memberFields)
         .eq("user_id", id)
         .eq("workspace_id", workspace_id);
-      if (error) {
-        const status = error.code === "42501" ? 403 : 500;
-        return reply.status(status).send(fail(status === 403 ? error.message : dbError(error)));
-      }
+      /* 42501 da trigger protect_workspace_owner vira 403 com a mensagem dela */
+      if (error) return sendDbError(req, reply, error);
     }
     return reply.send(ok({ message: "Membro atualizado" }));
   });
@@ -301,14 +299,14 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
     if (neverLoggedIn) {
       /* Deleta a conta — cascata remove workspace_members automaticamente */
       const { error: delErr } = await supabaseAdmin.auth.admin.deleteUser(id);
-      if (delErr) return reply.status(500).send(fail(dbError(delErr)));
+      if (delErr) return sendDbError(req, reply, delErr);
     } else {
       /* Usuário já tem conta ativa — remove só do workspace */
       const { error: delErr } = await supabaseAdmin
         .from("workspace_members")
         .delete()
         .eq("id", membership.id);
-      if (delErr) return reply.status(500).send(fail(dbError(delErr)));
+      if (delErr) return sendDbError(req, reply, delErr);
     }
 
     return reply.send(ok({ revoked: true, accountDeleted: neverLoggedIn }));
@@ -329,11 +327,8 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
       .eq("user_id", id)
       .eq("workspace_id", workspace_id);
 
-    /* 42501 = bloqueio da trigger protect_workspace_owner (mensagem já é para o usuário) */
-    if (error) {
-      const status = error.code === "42501" ? 403 : 500;
-      return reply.status(status).send(fail(status === 403 ? error.message : dbError(error)));
-    }
+    /* 42501 da trigger protect_workspace_owner vira 403 com a mensagem dela */
+    if (error) return sendDbError(req, reply, error);
     return reply.status(204).send();
   });
 };

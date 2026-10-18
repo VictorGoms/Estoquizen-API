@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { CreateProductSchema, UpdateProductSchema, AdjustQtySchema } from "../../schemas/product.schema.js";
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
-import { ok, fail, dbError } from "../../lib/response.js";
+import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { getLimits } from "../../lib/plans.js";
 import { assertActiveSubscription, getProductWorkspaceId } from "../../lib/checkSubscription.js";
 
@@ -23,7 +23,7 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
       .eq("workspace_id", workspace_id)
       .order("name");
 
-    if (error) return reply.status(500).send(fail(dbError(error)));
+    if (error) return sendDbError(req, reply, error);
     return reply.send(ok(data));
   });
 
@@ -84,7 +84,7 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
       .select()
       .single();
 
-    if (error) return reply.status(500).send(fail(dbError(error)));
+    if (error) return sendDbError(req, reply, error);
 
     /* Se houver estoque inicial, registra como primeira movimentação */
     if (initialQty > 0) {
@@ -99,7 +99,7 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
         /* Sem desfazer, o produto ficaria com estoque 0 sem o usuário saber.
            supabaseAdmin porque member não tem DELETE pela RLS; apaga só o produto recém-criado. */
         await supabaseAdmin.from("products").delete().eq("id", data.id);
-        return reply.status(500).send(fail(dbError(adjustError)));
+        return sendDbError(req, reply, adjustError);
       }
 
       return reply.status(201).send(ok({ ...data, qty: (adjusted as { qty: number }).qty }));
@@ -127,7 +127,7 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
       .select()
       .single();
 
-    if (error) return reply.status(500).send(fail(dbError(error)));
+    if (error) return sendDbError(req, reply, error);
     return reply.send(ok(data));
   });
 
@@ -179,7 +179,7 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
     if (since) query = query.gte("created_at", since);
 
     const { data, error } = await query;
-    if (error) return reply.status(500).send(fail(dbError(error)));
+    if (error) return sendDbError(req, reply, error);
     return reply.send(ok(data));
   });
 
@@ -194,7 +194,7 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
     const db     = supabaseForUser(token);
 
     const { error } = await db.from("products").delete().eq("id", id);
-    if (error) return reply.status(500).send(fail(dbError(error)));
+    if (error) return sendDbError(req, reply, error);
     return reply.send(ok(null));
   });
 };

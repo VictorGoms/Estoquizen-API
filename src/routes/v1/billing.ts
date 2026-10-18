@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { stripe, PRICE_IDS } from "../../lib/stripe.js";
 import { supabaseAdmin } from "../../lib/supabase.js";
-import { ok, fail, dbError } from "../../lib/response.js";
+import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { requireMember } from "../../lib/membership.js";
 
 const OWNER_ONLY = "Só o owner do workspace pode gerenciar a assinatura.";
@@ -22,7 +22,7 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
       .eq("workspace_id", workspace_id)
       .maybeSingle();
 
-    if (error) return reply.status(500).send(fail(dbError(error)));
+    if (error) return sendDbError(req, reply, error);
     if (!data)  return reply.status(404).send(fail("Assinatura não encontrada"));
 
     return reply.send(ok(data));

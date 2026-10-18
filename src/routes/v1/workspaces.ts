@@ -2,7 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { createHash } from "node:crypto";
 import { CreateWorkspaceSchema, UpdateWorkspaceSchema } from "../../schemas/workspace.schema.js";
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
-import { ok, fail, dbError } from "../../lib/response.js";
+import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { assertActiveSubscription } from "../../lib/checkSubscription.js";
 import { sanitizeCpf } from "../../lib/sanitize.js";
 import { stripe } from "../../lib/stripe.js";
@@ -23,7 +23,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
       .eq("user_id", req.user.id)
       .eq("status", "ativo");
 
-    if (error) return reply.status(500).send(fail(dbError(error)));
+    if (error) return sendDbError(req, reply, error);
     return reply.send(ok(data));
   });
 
@@ -71,14 +71,14 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
       .select()
       .single();
 
-    if (wsErr) return reply.status(500).send(fail(dbError(wsErr)));
+    if (wsErr) return sendDbError(req, reply, wsErr);
 
     /* Desfaz o que já foi criado se um passo seguinte falhar (cascade apaga membros e assinatura) */
     const rollback = async (err: { message: string }) => {
       req.log.error({ err, workspace_id: ws.id }, "falha ao criar workspace; desfazendo");
       await supabaseAdmin.from("trial_grants").delete().eq("workspace_id", ws.id);
       await supabaseAdmin.from("workspaces").delete().eq("id", ws.id);
-      return reply.status(500).send(fail(dbError(err)));
+      return sendDbError(req, reply, err);
     };
 
     const { error: memberErr } = await supabaseAdmin
@@ -147,7 +147,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
       .select()
       .single();
 
-    if (error) return reply.status(500).send(fail(dbError(error)));
+    if (error) return sendDbError(req, reply, error);
     return reply.send(ok(data));
   });
 
@@ -206,7 +206,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
       .delete()
       .eq("id", id);
 
-    if (deleteErr) return reply.status(500).send(fail(dbError(deleteErr)));
+    if (deleteErr) return sendDbError(req, reply, deleteErr);
 
     return reply.send(ok({ deleted: true }));
   });

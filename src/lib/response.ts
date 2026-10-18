@@ -1,3 +1,4 @@
+import type { FastifyReply, FastifyRequest } from "fastify";
 import type { ApiResponse } from "../types/index.js";
 
 export function ok<T>(data: T, meta?: Record<string, unknown>): ApiResponse<T> {
@@ -42,4 +43,36 @@ export function dbError(error: { message: string }, fallback = "Erro interno. Te
 
   // Qualquer outro erro do banco — não expõe detalhes
   return fallback;
+}
+
+/** Status HTTP de um erro do Postgres/PostgREST, pelo código (SQLSTATE). */
+export function dbStatus(error: { code?: string }): number {
+  switch (error.code) {
+    case "23505":                         return 409; // registro duplicado
+    case "23503": case "23502": case "23514":
+    case "22P02": case "22003":           return 400; // FK, NOT NULL, CHECK, formato, faixa
+    case "42501":                         return 403; // RLS ou trigger de permissão
+    case "PGRST116":                      return 404; // .single() sem linha
+    default:                              return 500;
+  }
+}
+
+/**
+ * Responde um erro do banco com o status certo e a mensagem saneada.
+ * Nos 500 registra o erro original no log (antes os 500 não deixavam rastro).
+ */
+export function sendDbError(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  error: { message: string; code?: string },
+) {
+  const status = dbStatus(error);
+  if (status >= 500) req.log.error({ err: error, method: req.method, url: req.url }, "erro de banco");
+
+  /* 42501 de trigger já vem com mensagem para o usuário; o de RLS, não */
+  const message = status === 403
+    ? (/row-level security/i.test(error.message) ? "Você não tem permissão para esta ação." : error.message)
+    : dbError(error);
+
+  return reply.status(status).send(fail(message));
 }
