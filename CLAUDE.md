@@ -141,7 +141,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS profiles_cpf_unique ON public.profiles (cpf) W
 - `adjust_product_qty(p_product_id uuid, p_delta numeric, p_reason, p_user_id)` — ajuste atômico de estoque + insert em movements (uma única versão, numeric; o autor é `auth.uid()`)
 - `accept_workspace_invite()` — chamada pelo frontend em `/set-password` após definir senha; ativa só um convite **pendente que já existe** (o papel vem do convite, nunca do user_metadata); não aceita anon
 - `import_nota_fiscal(p_workspace_id, p_chave, p_tipo, p_itens jsonb)` — importação de nota numa transação (ver `/nfe/importar`)
-- `email_exists(p_email text) → boolean` — verifica se email existe em auth.users (usado no forgot-password)
+- `email_exists(p_email text) → boolean` — verifica se email existe em auth.users. Ninguém usa mais: só o service_role executa (SCRUM-65, ela deixava descobrir quem tem conta)
 - A RPC antiga `invite_member` e a edge function `invite-member` foram removidas (2026-10-17)
 
 ## Rate limiting (server.ts)
@@ -184,7 +184,7 @@ As variáveis `SMTP_*` não são mais usadas (o `mailer.ts` foi removido).
 
 ### Páginas de auth do frontend
 - `/login` — login email+senha + Google OAuth; erros em português
-- `/forgot-password` — verifica se email existe via RPC `email_exists`, envia reset via `resetPasswordForEmail` com `redirectTo=/reset-password`, cooldown 60s
+- `/forgot-password` — envia reset via `resetPasswordForEmail` com `redirectTo=/reset-password` e responde igual exista a conta ou não (não revela quem tem conta); cooldown 60s
 - `/reset-password` — se tiver `?code=` na URL chama `exchangeCodeForSession(code)` antes de mostrar o form; chama `supabase.auth.updateUser({ password })`
 - `/auth/callback` — ponto de redirect do Supabase para OAuth (Google) e convites de novos usuários; chama `exchangeCodeForSession(code)` e redireciona com base em `from_invite` no user_metadata
 - `/set-password` — tela de definir senha para usuários **recém convidados** (novos no sistema); chama RPC `accept_workspace_invite` após definir senha
