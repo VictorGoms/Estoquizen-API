@@ -11,9 +11,12 @@ interface PlanLimits {
   members:      number;
   dailyInvites: number; // convites enviados por dia por workspace
   price:        number; // R$/mês
-  nfe:          boolean; // importação de nota (NFC-e e XML) — a tela de planos promete só no Growth e no Pro
-  metricas:     boolean; // relatórios e análises (/dashboard-metricas, aplicado no front)
+  notasPorMes:  number | null; // ler nota de compra (NFC-e/XML) por mês; null = sem limite
+  metricasDias: number;        // até quantos dias as métricas mostram (aplicado no front)
 }
+
+/* Planos fechados pelo João em 2026-10-17 (EQZ-27): equipe 3/10/sem limite, ler nota 2 por mês
+   no Basic e métricas de 30 dias / 3 meses / 12 meses. Os preços novos dependem do Stripe. */
 
 export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
   basic: {
@@ -22,26 +25,26 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     members:      3,
     dailyInvites: 10,
     price:        19.90,
-    nfe:          false,
-    metricas:     false,
+    notasPorMes:  2,
+    metricasDias: 30,
   },
   growth: {
     label:        "Growth",
     products:     300,
-    members:      7,
+    members:      10,
     dailyInvites: 25,
     price:        29.90,
-    nfe:          true,
-    metricas:     true,
+    notasPorMes:  null,
+    metricasDias: 90,
   },
   pro: {
     label:        "Pro",
     products:     2000,
-    members:      12,
+    members:      Number.POSITIVE_INFINITY, // sem limite de equipe; o limite técnico é dailyInvites
     dailyInvites: 50,
     price:        59.90,
-    nfe:          true,
-    metricas:     true,
+    notasPorMes:  null,
+    metricasDias: 365,
   },
 };
 

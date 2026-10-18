@@ -18,12 +18,30 @@ const ConsultarSchema = z.object({
   workspace_id: z.string().uuid("workspace_id inválido"),
 });
 
-/* SCRUM-57: a tela de planos promete a importação de nota só no Growth e no Pro */
-async function assertPlanHasNfe(workspaceId: string, reply: FastifyReply): Promise<boolean> {
+/** Início do mês corrente no horário de Brasília (UTC-3, sem horário de verão desde 2019). */
+function inicioDoMesBrasil(): string {
+  const brt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  return new Date(Date.UTC(brt.getUTCFullYear(), brt.getUTCMonth(), 1, 3)).toISOString();
+}
+
+/* EQZ-27: o Basic lê até 2 notas de compra por mês (a RPC import_nota_fiscal confere de novo) */
+async function assertNotaQuota(workspaceId: string, reply: FastifyReply): Promise<boolean> {
   const { data: ws } = await supabaseAdmin.from("workspaces").select("plan").eq("id", workspaceId).maybeSingle();
   const limits = getLimits(ws?.plan ?? "basic");
-  if (limits.nfe) return true;
-  reply.status(403).send(fail(`A importação de nota não faz parte do plano ${limits.label}. Ela está nos planos Growth e Pro.`));
+  if (limits.notasPorMes === null) return true;
+
+  const { count, error } = await supabaseAdmin
+    .from("nota_imports")
+    .select("id", { count: "exact", head: true })
+    .eq("workspace_id", workspaceId)
+    .gte("created_at", inicioDoMesBrasil());
+  if (error) { reply.status(500).send(fail("Não foi possível conferir o limite de notas. Tente novamente.")); return false; }
+
+  if ((count ?? 0) < limits.notasPorMes) return true;
+  reply.status(403).send(fail(
+    `O plano ${limits.label} lê até ${limits.notasPorMes} notas de compra por mês, e as deste mês já foram usadas. ` +
+    `Para ler mais, mude para o Growth.`
+  ));
   return false;
 }
 
@@ -56,7 +74,7 @@ const nfeRoutes: FastifyPluginAsync = async (fastify) => {
 
     /* Só owner/admin de um workspace com o recurso no plano (antes qualquer conta consultava) */
     if (!await requireMember(workspace_id, req.user.id, reply, ["owner", "admin"])) return;
-    if (!await assertPlanHasNfe(workspace_id, reply)) return;
+    if (!await assertNotaQuota(workspace_id, reply)) return;
 
     try {
       if (tipo === "nfce") {
@@ -82,7 +100,7 @@ const nfeRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (!await requireMember(workspace_id, req.user.id, reply, ["owner", "admin"])) return;
     if (!await assertActiveSubscription(workspace_id, reply)) return;
-    if (!await assertPlanHasNfe(workspace_id, reply)) return;
+    if (!await assertNotaQuota(workspace_id, reply)) return;
 
     /* Os produtos novos da nota contam no limite do plano */
     const novos = itens.filter((i) => !i.product_id).length;

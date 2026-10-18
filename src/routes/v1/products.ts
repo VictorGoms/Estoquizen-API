@@ -169,7 +169,8 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
     const token = req.headers.authorization!.slice(7);
     const db    = supabaseForUser(token);
 
-    const cap = Math.min(parseInt(limit ?? "200", 10), 500);
+    /* 1000 é o máximo do PostgREST; as métricas de 3 e 12 meses pedem tudo */
+    const cap = Math.min(parseInt(limit ?? "200", 10) || 200, 1000);
 
     let query = db
       .from("movements")
