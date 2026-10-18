@@ -64,6 +64,7 @@ database/
 - Erro do banco: `return sendDbError(req, reply, error)` — status pelo código do Postgres (23505→409, FK/NOT NULL/CHECK→400, 42501→403), mensagem saneada por `dbError()` e log do original nos 500
 - O supabase-js e o SDK do Resend **não lançam exceção**: devolvem `{ error }`. Sempre checar o `error`
 - Erros não tratados e rota inexistente já saem como `{ data: null, error }` em português (setErrorHandler/setNotFoundHandler no server.ts)
+- **O banco aplica as regras também para quem chama o Supabase direto (SCRUM-48).** O cliente (`authenticated`) não grava `qty`, `movements`, `nota_imports`, `workspaces.plan` nem insere membros; só as colunas liberadas por GRANT (produto: dados cadastrais; workspace: nome/descrição; perfil: nome/telefone/foto; membro: papel/status). Toda escrita exige `workspace_is_writable()` (mesma regra do `assertActiveSubscription`). Coluna nova que o cliente precise gravar = GRANT novo numa migração
 
 ## Auth flow
 1. Cliente faz login via Supabase Auth (frontend/mobile)
@@ -140,9 +141,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS profiles_cpf_unique ON public.profiles (cpf) W
 ```
 
 ### RPCs (funções Postgres)
-- `adjust_product_qty(p_product_id uuid, p_delta numeric, p_reason, p_user_id)` — ajuste atômico de estoque + insert em movements (uma única versão, numeric; o autor é `auth.uid()`)
+- `adjust_product_qty(p_product_id uuid, p_delta numeric, p_reason, p_user_id)` — ajuste atômico de estoque + insert em movements (uma única versão, numeric; o autor é `auth.uid()`). SECURITY DEFINER: checa membro e `workspace_is_writable` por dentro
 - `accept_workspace_invite()` — chamada pelo frontend em `/set-password` após definir senha; ativa só um convite **pendente que já existe** (o papel vem do convite, nunca do user_metadata); não aceita anon
-- `import_nota_fiscal(p_workspace_id, p_chave, p_tipo, p_itens jsonb)` — importação de nota numa transação (ver `/nfe/importar`)
+- `import_nota_fiscal(p_workspace_id, p_chave, p_tipo, p_itens jsonb)` — importação de nota numa transação (ver `/nfe/importar`). SECURITY DEFINER: checa owner/admin e `workspace_is_writable` por dentro
+- `workspace_is_writable(ws)` — a assinatura permite escrita? (trial válido, ativo, past_due ou legado sem assinatura; só responde para membros). Usada nas policies de escrita
+- `storage_workspace_writable(nome)` — a 1ª pasta do arquivo em `product-images` é um workspace do qual a pessoa é membro e que aceita escrita. Fotos de produto ficam em `<workspace_id>/...`
+- Trigger `products_plan_limit` (BEFORE INSERT em products): limite de produtos do plano no banco (`plan_product_limit`: 50/300/2000, os mesmos de `plans.ts`), vale também para a RPC de nota. Mudou o limite em `plans.ts`? Mude a função também
 - `email_exists(p_email text) → boolean` — verifica se email existe em auth.users. Ninguém usa mais: só o service_role executa (SCRUM-65, ela deixava descobrir quem tem conta)
 - A RPC antiga `invite_member` e a edge function `invite-member` foram removidas (2026-10-17)
 
