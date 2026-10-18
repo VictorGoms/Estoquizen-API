@@ -1,17 +1,37 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { ok, fail } from "../../lib/response.js";
+import { ok, fail, dbError } from "../../lib/response.js";
 import { consultarNfce } from "../../lib/nfce.js";
+import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
+import { sanitizeText, sanitizeCode } from "../../lib/sanitize.js";
+import { requireMember } from "../../lib/membership.js";
+import { assertActiveSubscription } from "../../lib/checkSubscription.js";
+import { getLimits } from "../../lib/plans.js";
+
+const chaveSchema = z.string()
+  .transform((v) => v.replace(/\s/g, ""))
+  .pipe(z.string().length(44, "Chave deve ter 44 dígitos").regex(/^\d+$/, "Chave deve conter apenas números"));
 
 const ConsultarSchema = z.object({
   tipo:  z.enum(["nfce"]),
-  chave: z.string()
-    .transform((v) => v.replace(/\s/g, ""))
-    .pipe(z.string().length(44, "Chave deve ter 44 dígitos").regex(/^\d+$/, "Chave deve conter apenas números")),
+  chave: chaveSchema,
+});
+
+const ImportarSchema = z.object({
+  workspace_id: z.string().uuid("workspace_id inválido"),
+  tipo:         z.enum(["nfce", "xml"]),
+  chave:        chaveSchema.nullable().optional(),
+  itens: z.array(z.object({
+    product_id: z.string().uuid("Produto inválido").optional(),
+    name:       z.string().transform((v) => sanitizeText(v, 200)).pipe(z.string().min(1, "Item sem nome")),
+    code:       z.string().optional().nullable().transform((v) => (!v ? undefined : sanitizeCode(v) || undefined)),
+    unit:       z.string().transform((v) => sanitizeText(v, 20)).optional(),
+    price:      z.number().nonnegative("Preço não pode ser negativo").optional(),
+    qty:        z.number().positive("Quantidade deve ser maior que zero"),
+  })).min(1, "A nota não tem itens para importar").max(500, "Nota com itens demais"),
 });
 
 const nfeRoutes: FastifyPluginAsync = async (fastify) => {
-  const auth      = { preHandler: [fastify.authenticate] };
   const authWrite = {
     preHandler: [fastify.authenticate],
     config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
@@ -36,6 +56,62 @@ const nfeRoutes: FastifyPluginAsync = async (fastify) => {
       const msg = err instanceof Error ? err.message : "Erro ao consultar nota fiscal.";
       return reply.status(502).send(fail(msg));
     }
+  });
+
+  /* POST /nfe/importar — importa a nota inteira numa transação (RPC import_nota_fiscal).
+     Recusa a mesma chave no mesmo workspace (antes a nota repetida duplicava o estoque). */
+  fastify.post("/nfe/importar", authWrite, async (req, reply) => {
+    const parsed = ImportarSchema.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
+
+    const { workspace_id, tipo, chave, itens } = parsed.data;
+
+    if (!await requireMember(workspace_id, req.user.id, reply, ["owner", "admin"])) return;
+    if (!await assertActiveSubscription(workspace_id, reply)) return;
+
+    /* Os produtos novos da nota contam no limite do plano */
+    const novos = itens.filter((i) => !i.product_id).length;
+    if (novos > 0) {
+      const { data: ws } = await supabaseAdmin.from("workspaces").select("plan").eq("id", workspace_id).single();
+      const limits = getLimits(ws?.plan ?? "basic");
+      const { count } = await supabaseAdmin
+        .from("products")
+        .select("id", { count: "exact", head: true })
+        .eq("workspace_id", workspace_id);
+
+      if ((count ?? 0) + novos > limits.products) {
+        return reply.status(403).send(fail(
+          `Limite do plano ${limits.label}: a nota tem ${novos} produtos novos e o plano permite ${limits.products} ` +
+          `(você já tem ${count ?? 0}). Faça upgrade ou remova itens da nota.`
+        ));
+      }
+    }
+
+    const token = req.headers.authorization!.slice(7);
+    const db    = supabaseForUser(token);
+
+    const { data, error } = await db.rpc("import_nota_fiscal", {
+      p_workspace_id: workspace_id,
+      p_chave:        chave ?? null,
+      p_tipo:         tipo,
+      p_itens:        itens,
+    });
+
+    if (error) {
+      if (error.code === "23505") {
+        return reply.status(409).send(fail(
+          error.message.includes("já foi importada") ? error.message : "Esta nota já foi importada."
+        ));
+      }
+      if (error.message.includes("Acesso negado")) return reply.status(403).send(fail("Acesso negado"));
+      if (/Quantidade inválida|não encontrado|não tem itens/.test(error.message)) {
+        return reply.status(400).send(fail(error.message));
+      }
+      req.log.error({ err: error, workspace_id }, "falha ao importar nota fiscal");
+      return reply.status(500).send(fail(dbError(error)));
+    }
+
+    return reply.status(201).send(ok(data));
   });
 };
 
