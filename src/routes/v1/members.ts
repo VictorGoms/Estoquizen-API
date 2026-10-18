@@ -63,7 +63,6 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (!await assertActiveSubscription(workspace_id, reply)) return;
 
-    /* ── Validação de limite do plano ── */
     const { data: ws } = await supabaseAdmin
       .from("workspaces")
       .select("plan")
@@ -72,23 +71,11 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
 
     const limits = getLimits(ws?.plan ?? "basic");
 
-    /* Pendentes + ativos contam juntos contra o limite do plano */
-    const { count: memberCount } = await supabaseAdmin
-      .from("workspace_members")
-      .select("id", { count: "exact", head: true })
-      .eq("workspace_id", workspace_id)
-      .in("status", ["ativo", "pendente"]);
-
-    if ((memberCount ?? 0) >= limits.members) {
-      return reply.status(403).send(fail(
-        `Limite do plano ${limits.label} atingido: máximo de ${limits.members} membros (incluindo convites pendentes). Faça upgrade para continuar.`
-      ));
-    }
-
-    /* Limite diário de convites por workspace */
+    /* Limite diário: conta os e-mails de convite enviados (invite_log), inclusive reenvios e
+       convites já revogados. Contar linhas de workspace_members deixava convidar/revogar sem fim. */
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const { count: dailyCount } = await supabaseAdmin
-      .from("workspace_members")
+      .from("invite_log")
       .select("id", { count: "exact", head: true })
       .eq("workspace_id", workspace_id)
       .gte("created_at", since);
@@ -99,92 +86,105 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
       ));
     }
 
-    /* Verifica se o usuário já tem conta pelo email (case-insensitive) */
+    /* Conta já existente? Comparação exata sem diferenciar maiúsculas: escapa % e _, que no ilike
+       são curingas (um e-mail com "_" podia casar com o de outra pessoa) */
     const { data: existingProfile } = await supabaseAdmin
       .from("profiles")
       .select("id")
-      .ilike("email", email)
+      .ilike("email", email.replace(/[\\%_]/g, "\\$&"))
       .maybeSingle();
+
+    /* Duplicidade antes de mandar qualquer e-mail */
+    let pending: { id: string; role: string } | null = null;
+    if (existingProfile) {
+      const { data: membership } = await supabaseAdmin
+        .from("workspace_members")
+        .select("id, status, role")
+        .eq("workspace_id", workspace_id)
+        .eq("user_id", existingProfile.id)
+        .maybeSingle();
+
+      if (membership?.status === "ativo") {
+        return reply.status(409).send(fail("Este usuário já é membro ativo do workspace."));
+      }
+      if (membership) pending = { id: membership.id, role: membership.role };
+    }
+
+    /* Pendentes + ativos contam juntos contra o limite do plano (reenvio não ocupa vaga nova) */
+    if (!pending) {
+      const { count: memberCount } = await supabaseAdmin
+        .from("workspace_members")
+        .select("id", { count: "exact", head: true })
+        .eq("workspace_id", workspace_id)
+        .in("status", ["ativo", "pendente"]);
+
+      if ((memberCount ?? 0) >= limits.members) {
+        return reply.status(403).send(fail(
+          `Limite do plano ${limits.label} atingido: máximo de ${limits.members} membros (incluindo convites pendentes). Faça upgrade para continuar.`
+        ));
+      }
+    }
 
     const siteUrl = (process.env.ALLOWED_ORIGINS ?? "https://estoquizen.vercel.app").split(",")[0].trim();
     const redirectTo = `${siteUrl}/auth/callback`;
+    const metadata   = { name, workspace_id, role, from_invite: true };
+    const emailFailed = (err: unknown, msg: string) => {
+      req.log.error({ err, workspace_id }, msg);
+      return reply.status(500).send(fail("Não foi possível enviar o e-mail de convite. Tente novamente em alguns minutos."));
+    };
 
     let userId: string;
-    let confirmedUser = false;
 
-    if (existingProfile) {
-      /* Usuário existe — verificar se já confirmou o email (set-password) */
-      const { data: { user: authUser } } = await supabaseAdmin.auth.admin.getUserById(existingProfile.id);
-      confirmedUser = !!authUser?.email_confirmed_at;
-
-      if (!confirmedUser) {
-        /* Nunca clicou no link — deletar e re-convidar para enviar email novo */
-        await supabaseAdmin.auth.admin.deleteUser(existingProfile.id);
-        const { data: invite, error: inviteErr } = await supabaseAdmin.auth.admin.inviteUserByEmail(
-          email,
-          { redirectTo, data: { name, workspace_id, role, from_invite: true } },
-        );
-        if (inviteErr) {
-          req.log.error({ err: inviteErr, workspace_id }, "falha ao reenviar convite");
-          return reply.status(500).send(fail(dbError(inviteErr)));
-        }
-        userId = invite.user.id;
-        await supabaseAdmin
-          .from("profiles")
-          .upsert({ id: userId, name, email }, { onConflict: "id" });
-      } else {
-        /* Usuário confirmado — envia magic link via Supabase (mesmo SMTP do reset/convite) */
-        userId = existingProfile.id;
-
-        const { error: otpErr } = await supabaseAdmin.auth.signInWithOtp({
-          email,
-          options: {
-            shouldCreateUser:  false,
-            emailRedirectTo:   `${siteUrl}/aceitar-convite?workspace_id=${workspace_id}`,
-          },
-        });
-        /* Sem o e-mail, gravar o convite deixaria um pendente que a pessoa nunca recebe */
-        if (otpErr) {
-          req.log.error({ err: otpErr, workspace_id }, "falha ao enviar magic link de convite");
-          return reply.status(500).send(fail(
-            "Não foi possível enviar o e-mail de convite. Tente novamente em alguns minutos."
-          ));
-        }
-      }
-    } else {
-      /* Usuário novo — cria conta e envia email de convite */
+    if (!existingProfile) {
+      /* Usuário novo — cria conta e envia e-mail de convite */
       const { data: invite, error: inviteErr } = await supabaseAdmin.auth.admin.inviteUserByEmail(
-        email,
-        { redirectTo, data: { name, workspace_id, role, from_invite: true } },
+        email, { redirectTo, data: metadata },
       );
-      if (inviteErr) {
-        req.log.error({ err: inviteErr, workspace_id }, "falha ao enviar convite");
-        return reply.status(500).send(fail(dbError(inviteErr)));
-      }
+      if (inviteErr) return emailFailed(inviteErr, "falha ao enviar convite");
       userId = invite.user.id;
 
       /* Garante que o profile tem o nome — o trigger pode criar sem nome */
       await supabaseAdmin
         .from("profiles")
         .upsert({ id: userId, name, email }, { onConflict: "id" });
+    } else {
+      userId = existingProfile.id;
+      const { data: { user: authUser } } = await supabaseAdmin.auth.admin.getUserById(userId);
+
+      if (!authUser?.email_confirmed_at) {
+        /* Nunca confirmou: reenvia o convite sem apagar a conta (apagar levava junto os convites
+           pendentes dela em outros workspaces). O metadata aponta para este convite, que é o que
+           o /set-password aceita. */
+        await supabaseAdmin.auth.admin.updateUserById(userId, {
+          user_metadata: { ...(authUser?.user_metadata ?? {}), ...metadata },
+        });
+        const { error: inviteErr } = await supabaseAdmin.auth.admin.inviteUserByEmail(
+          email, { redirectTo, data: metadata },
+        );
+        if (inviteErr) return emailFailed(inviteErr, "falha ao reenviar convite");
+      } else {
+        /* Já tem conta confirmada — magic link para /aceitar-convite */
+        const { error: otpErr } = await supabaseAdmin.auth.signInWithOtp({
+          email,
+          options: {
+            shouldCreateUser: false,
+            emailRedirectTo:  `${siteUrl}/aceitar-convite?workspace_id=${workspace_id}`,
+          },
+        });
+        /* Sem o e-mail, gravar o convite deixaria um pendente que a pessoa nunca recebe */
+        if (otpErr) return emailFailed(otpErr, "falha ao enviar magic link de convite");
+      }
     }
 
-    /* Garante que não há convite duplicado para o mesmo workspace */
-    const { data: already } = await supabaseAdmin
-      .from("workspace_members")
-      .select("id, status")
-      .eq("workspace_id", workspace_id)
-      .eq("user_id", userId)
-      .maybeSingle();
+    await supabaseAdmin.from("invite_log").insert({ workspace_id, invited_by: req.user.id });
 
-    if (already) {
-      const msg = already.status === "ativo"
-        ? "Este usuário já é membro ativo do workspace."
-        : "Este usuário já possui um convite pendente.";
-      return reply.status(409).send(fail(msg));
+    if (pending) {
+      /* Convite pendente já existia: o e-mail foi reenviado; atualiza o papel se mudou */
+      if (pending.role !== role) {
+        await supabaseAdmin.from("workspace_members").update({ role }).eq("id", pending.id);
+      }
+      return reply.send(ok({ message: `Convite reenviado para ${email}.` }));
     }
-
-    const memberStatus = "pendente";
 
     const { error: memberErr } = await supabaseAdmin
       .from("workspace_members")
@@ -192,14 +192,13 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
         workspace_id,
         user_id:    userId,
         role,
-        status:     memberStatus,
+        status:     "pendente",
         invited_by: req.user.id,
       });
 
     if (memberErr) return reply.status(500).send(fail(dbError(memberErr)));
 
-    const msg = `Convite enviado para ${email}.`;
-    return reply.status(201).send(ok({ message: msg }));
+    return reply.status(201).send(ok({ message: `Convite enviado para ${email}.` }));
   });
 
   /* POST /members/accept — usuário aceita convite pendente */
