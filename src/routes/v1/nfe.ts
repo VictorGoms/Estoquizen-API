@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { consultarNfce } from "../../lib/nfce.js";
@@ -15,7 +15,18 @@ const chaveSchema = z.string()
 const ConsultarSchema = z.object({
   tipo:  z.enum(["nfce"]),
   chave: chaveSchema,
+  /* Opcional só até o front novo publicar (SCRUM-57); depois fica obrigatório */
+  workspace_id: z.string().uuid("workspace_id inválido").optional(),
 });
+
+/* SCRUM-57: a tela de planos promete a importação de nota só no Growth e no Pro */
+async function assertPlanHasNfe(workspaceId: string, reply: FastifyReply): Promise<boolean> {
+  const { data: ws } = await supabaseAdmin.from("workspaces").select("plan").eq("id", workspaceId).maybeSingle();
+  const limits = getLimits(ws?.plan ?? "basic");
+  if (limits.nfe) return true;
+  reply.status(403).send(fail(`A importação de nota não faz parte do plano ${limits.label}. Ela está nos planos Growth e Pro.`));
+  return false;
+}
 
 const ImportarSchema = z.object({
   workspace_id: z.string().uuid("workspace_id inválido"),
@@ -42,7 +53,12 @@ const nfeRoutes: FastifyPluginAsync = async (fastify) => {
     const parsed = ConsultarSchema.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
 
-    const { tipo, chave } = parsed.data;
+    const { tipo, chave, workspace_id } = parsed.data;
+
+    if (workspace_id) {
+      if (!await requireMember(workspace_id, req.user.id, reply, ["owner", "admin"])) return;
+      if (!await assertPlanHasNfe(workspace_id, reply)) return;
+    }
 
     try {
       if (tipo === "nfce") {
@@ -68,6 +84,7 @@ const nfeRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (!await requireMember(workspace_id, req.user.id, reply, ["owner", "admin"])) return;
     if (!await assertActiveSubscription(workspace_id, reply)) return;
+    if (!await assertPlanHasNfe(workspace_id, reply)) return;
 
     /* Os produtos novos da nota contam no limite do plano */
     const novos = itens.filter((i) => !i.product_id).length;

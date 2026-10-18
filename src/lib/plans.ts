@@ -11,6 +11,8 @@ interface PlanLimits {
   members:      number;
   dailyInvites: number; // convites enviados por dia por workspace
   price:        number; // R$/mês
+  nfe:          boolean; // importação de nota (NFC-e e XML) — a tela de planos promete só no Growth e no Pro
+  metricas:     boolean; // relatórios e análises (/dashboard-metricas, aplicado no front)
 }
 
 export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
@@ -20,6 +22,8 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     members:      3,
     dailyInvites: 10,
     price:        19.90,
+    nfe:          false,
+    metricas:     false,
   },
   growth: {
     label:        "Growth",
@@ -27,6 +31,8 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     members:      7,
     dailyInvites: 25,
     price:        29.90,
+    nfe:          true,
+    metricas:     true,
   },
   pro: {
     label:        "Pro",
@@ -34,6 +40,8 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     members:      12,
     dailyInvites: 50,
     price:        59.90,
+    nfe:          true,
+    metricas:     true,
   },
 };
 
