@@ -124,7 +124,10 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
           email,
           { redirectTo, data: { name, workspace_id, role, from_invite: true } },
         );
-        if (inviteErr) return reply.status(500).send(fail(dbError(inviteErr)));
+        if (inviteErr) {
+          req.log.error({ err: inviteErr, workspace_id }, "falha ao reenviar convite");
+          return reply.status(500).send(fail(dbError(inviteErr)));
+        }
         userId = invite.user.id;
         await supabaseAdmin
           .from("profiles")
@@ -133,13 +136,20 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
         /* Usuário confirmado — envia magic link via Supabase (mesmo SMTP do reset/convite) */
         userId = existingProfile.id;
 
-        await supabaseAdmin.auth.signInWithOtp({
+        const { error: otpErr } = await supabaseAdmin.auth.signInWithOtp({
           email,
           options: {
             shouldCreateUser:  false,
             emailRedirectTo:   `${siteUrl}/aceitar-convite?workspace_id=${workspace_id}`,
           },
         });
+        /* Sem o e-mail, gravar o convite deixaria um pendente que a pessoa nunca recebe */
+        if (otpErr) {
+          req.log.error({ err: otpErr, workspace_id }, "falha ao enviar magic link de convite");
+          return reply.status(500).send(fail(
+            "Não foi possível enviar o e-mail de convite. Tente novamente em alguns minutos."
+          ));
+        }
       }
     } else {
       /* Usuário novo — cria conta e envia email de convite */
@@ -147,7 +157,10 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
         email,
         { redirectTo, data: { name, workspace_id, role, from_invite: true } },
       );
-      if (inviteErr) return reply.status(500).send(fail(dbError(inviteErr)));
+      if (inviteErr) {
+        req.log.error({ err: inviteErr, workspace_id }, "falha ao enviar convite");
+        return reply.status(500).send(fail(dbError(inviteErr)));
+      }
       userId = invite.user.id;
 
       /* Garante que o profile tem o nome — o trigger pode criar sem nome */
