@@ -26,8 +26,8 @@ const ImportarSchema = z.object({
     name:       z.string().transform((v) => sanitizeText(v, 200)).pipe(z.string().min(1, "Item sem nome")),
     code:       z.string().optional().nullable().transform((v) => (!v ? undefined : sanitizeCode(v) || undefined)),
     unit:       z.string().transform((v) => sanitizeText(v, 20)).optional(),
-    price:      z.number().nonnegative("Preço não pode ser negativo").optional(),
-    qty:        z.number().positive("Quantidade deve ser maior que zero"),
+    price:      z.number().nonnegative("Preço não pode ser negativo").transform((v) => Math.round(v * 100) / 100).optional(),
+    qty:        z.number().transform((v) => Math.round(v * 1000) / 1000).pipe(z.number().positive("Quantidade deve ser maior que zero")),
   })).min(1, "A nota não tem itens para importar").max(500, "Nota com itens demais"),
 });
 
