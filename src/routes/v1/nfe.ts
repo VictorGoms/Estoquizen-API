@@ -15,8 +15,7 @@ const chaveSchema = z.string()
 const ConsultarSchema = z.object({
   tipo:  z.enum(["nfce"]),
   chave: chaveSchema,
-  /* Opcional só até o front novo publicar (SCRUM-57); depois fica obrigatório */
-  workspace_id: z.string().uuid("workspace_id inválido").optional(),
+  workspace_id: z.string().uuid("workspace_id inválido"),
 });
 
 /* SCRUM-57: a tela de planos promete a importação de nota só no Growth e no Pro */
@@ -55,10 +54,9 @@ const nfeRoutes: FastifyPluginAsync = async (fastify) => {
 
     const { tipo, chave, workspace_id } = parsed.data;
 
-    if (workspace_id) {
-      if (!await requireMember(workspace_id, req.user.id, reply, ["owner", "admin"])) return;
-      if (!await assertPlanHasNfe(workspace_id, reply)) return;
-    }
+    /* Só owner/admin de um workspace com o recurso no plano (antes qualquer conta consultava) */
+    if (!await requireMember(workspace_id, req.user.id, reply, ["owner", "admin"])) return;
+    if (!await assertPlanHasNfe(workspace_id, reply)) return;
 
     try {
       if (tipo === "nfce") {
