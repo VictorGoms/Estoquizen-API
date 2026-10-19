@@ -1,7 +1,8 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
-import { consultarNfce } from "../../lib/nfce.js";
+import { consultarNfce, NfceError } from "../../lib/nfce.js";
+import { chaveValida } from "../../lib/nfeChave.js";
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { sanitizeText, sanitizeCode } from "../../lib/sanitize.js";
 import { requireMember } from "../../lib/membership.js";
@@ -10,7 +11,9 @@ import { getLimits } from "../../lib/plans.js";
 
 const chaveSchema = z.string()
   .transform((v) => v.replace(/\s/g, ""))
-  .pipe(z.string().length(44, "Chave deve ter 44 dígitos").regex(/^\d+$/, "Chave deve conter apenas números"));
+  .pipe(z.string().length(44, "Chave deve ter 44 dígitos").regex(/^\d+$/, "Chave deve conter apenas números"))
+  /* O último dígito confere os outros 43: chave digitada errada não vai à SEFAZ */
+  .refine(chaveValida, "Chave inválida: confira os números. O último dígito não bate com os anteriores.");
 
 const ConsultarSchema = z.object({
   tipo:  z.enum(["nfce"]),
@@ -85,8 +88,9 @@ const nfeRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.send(ok({ chave, total_itens: itens.length, itens }));
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Erro ao consultar nota fiscal.";
-      return reply.status(502).send(fail(msg));
+      if (err instanceof NfceError) return reply.status(err.status).send(fail(err.message));
+      req.log.error({ err }, "falha inesperada na consulta da NFC-e");
+      return reply.status(502).send(fail("Não foi possível consultar a nota agora. Tente de novo em alguns minutos."));
     }
   });
 

@@ -1,4 +1,12 @@
 import * as cheerio from "cheerio";
+import { codigoDoItem, cnpjRaizDaChave } from "./nfeChave.js";
+
+/** Erro da consulta com o status HTTP certo e a mensagem para a pessoa (o detalhe vai pro log). */
+export class NfceError extends Error {
+  constructor(message: string, public status: number) {
+    super(message);
+  }
+}
 
 export interface NfceItem {
   nome:           string;
@@ -43,9 +51,13 @@ const PORTAIS: Record<string, (chave: string) => string[]> = {
   "51": (k) => [`https://www.sefaz.mt.gov.br/nfce/consultanfce?p=${k}|3|1`],
 };
 
+/* Código IBGE da UF (2 primeiros dígitos da chave) → sigla, para as mensagens */
 const ESTADO_NOME: Record<string, string> = {
-  "35": "SP", "41": "PR", "33": "RJ", "43": "RS", "31": "MG",
-  "29": "BA", "23": "CE", "32": "ES", "50": "MS", "51": "MT",
+  "11": "RO", "12": "AC", "13": "AM", "14": "RR", "15": "PA", "16": "AP", "17": "TO",
+  "21": "MA", "22": "PI", "23": "CE", "24": "RN", "25": "PB", "26": "PE", "27": "AL", "28": "SE", "29": "BA",
+  "31": "MG", "32": "ES", "33": "RJ", "35": "SP",
+  "41": "PR", "42": "SC", "43": "RS",
+  "50": "MS", "51": "MT", "52": "GO", "53": "DF",
 };
 
 const FETCH_HEADERS = {
@@ -147,26 +159,40 @@ export async function consultarNfce(chave: string): Promise<NfceItem[]> {
   const buildUrls = PORTAIS[estadoCod];
 
   if (!buildUrls) {
-    const uf = ESTADO_NOME[estadoCod] ?? `código ${estadoCod}`;
-    throw new Error(`Estado ${uf} ainda não suportado na consulta manual. Use a opção de QR Code.`);
+    const uf = ESTADO_NOME[estadoCod];
+    throw new NfceError(
+      uf ? `Ainda não lemos NFC-e de ${uf} pela chave. Use o XML da nota, se tiver.`
+         : "Essa chave não é de nenhum estado. Confira os 2 primeiros números.",
+      422,
+    );
   }
 
   const urls = buildUrls(chave);
 
   /* Dispara todas as URLs em paralelo — vence a primeira que responder */
   try {
-    const itens = await Promise.any(urls.map((url) => fetchItens(url)));
+    const lidos = await Promise.any(urls.map((url) => fetchItens(url)));
+    /* Código interno do fornecedor ganha a raiz do CNPJ do emitente (está na chave) */
+    const raiz  = cnpjRaizDaChave(chave);
+    const itens = lidos.map((i) => ({ ...i, codigo: codigoDoItem(i.codigo, raiz) }));
     cacheSet(chave, itens);
     return itens;
   } catch (err) {
-    /* AggregateError quando todas falharam */
-    const detail = err instanceof AggregateError
-      ? err.errors.map((e: Error) => e.message).join(" | ")
-      : err instanceof Error ? err.message : String(err);
+    /* AggregateError quando todas falharam. O detalhe técnico vai só para o log
+       (antes a pessoa via "HTML sem itens | HTML sem itens | HTML sem itens") */
+    const erros  = err instanceof AggregateError ? err.errors as Error[] : [err as Error];
+    const detail = erros.map((e) => e?.message ?? String(e)).join(" | ");
+    console.warn(`[NFC-e] consulta falhou (${chave.slice(0, 6)}…): ${detail}`);
 
-    throw new Error(
-      `Não foi possível consultar a NFC-e. ${detail}. ` +
-      `Verifique se a chave está correta e se o portal SEFAZ está disponível.`
+    if (erros.every((e) => e?.message === "HTML sem itens")) {
+      throw new NfceError(
+        "Não encontramos essa nota no portal da SEFAZ. Confira a chave; notas emitidas há poucos minutos podem demorar para aparecer.",
+        404,
+      );
+    }
+    throw new NfceError(
+      "O portal da SEFAZ não respondeu agora. Tente de novo em alguns minutos ou use o XML da nota.",
+      502,
     );
   }
 }
