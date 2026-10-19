@@ -149,6 +149,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS profiles_cpf_unique ON public.profiles (cpf) W
 - `storage_workspace_writable(nome)` — a 1ª pasta do arquivo em `product-images` é um workspace do qual a pessoa é membro e que aceita escrita. Fotos de produto ficam em `<workspace_id>/...`
 - Trigger `products_plan_limit` (BEFORE INSERT em products): limite de produtos do plano no banco (`plan_product_limit`: 50/300/2000, os mesmos de `plans.ts`), vale também para a RPC de nota. Mudou o limite em `plans.ts`? Mude a função também
 - `stock_forecast(workspace_id)` — saídas dos últimos 30 dias por produto, para a previsão "dura ~X dias" do front (EQZ-16). SECURITY INVOKER (a RLS vale)
+- `stock_last_outflow(workspace_id)` — data da última saída de cada produto, para o "R$ parados" (EQZ-18). SECURITY INVOKER
 - `email_exists(p_email text) → boolean` — verifica se email existe em auth.users. Ninguém usa mais: só o service_role executa (SCRUM-65, ela deixava descobrir quem tem conta)
 - A RPC antiga `invite_member` e a edge function `invite-member` foram removidas (2026-10-17)
 
