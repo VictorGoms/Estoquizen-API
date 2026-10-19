@@ -14,6 +14,7 @@ import v1Routes      from "./routes/v1/index.js";
 import webhookRoutes from "./routes/webhooks.js";
 import cleanupRoutes from "./routes/admin/cleanup.js";
 import { runCleanup } from "./lib/cleanup.js";
+import { rateLimitKey } from "./lib/rateLimitKey.js";
 
 const PORT   = Number(process.env.PORT ?? 3001);
 const IS_DEV = process.env.NODE_ENV !== "production";
@@ -63,24 +64,9 @@ await fastify.register(rateLimit, {
   global:    true,
   max:       200,
   timeWindow: "1 minute",
-  /* Usa userId quando autenticado, fallback para IP — evita bloquear
-     usuários legítimos atrás do mesmo IP (empresa, Wi-Fi corporativo). */
-  keyGenerator: (req) => {
-    const auth = req.headers.authorization;
-    if (auth?.startsWith("Bearer ")) {
-      /* Extrai o `sub` do payload sem verificar assinatura (já verificado
-         pelo plugin de auth). Só queremos o identificador do usuário. */
-      try {
-        const payload = JSON.parse(
-          Buffer.from(auth.slice(7).split(".")[1], "base64url").toString("utf8")
-        );
-        if (payload?.sub) return `user:${payload.sub}`;
-      } catch {
-        /* token malformado — cai no IP */
-      }
-    }
-    return req.ip;
-  },
+  /* Por usuário quando o token tem assinatura válida (não bloqueia quem divide o mesmo IP,
+     como o Wi-Fi de uma loja); senão pelo IP. Token forjado não ganha balde próprio (EQZ-44). */
+  keyGenerator: rateLimitKey,
   /* O plugin lança este objeto: sem statusCode, o erro saía como 500 em vez de 429 */
   errorResponseBuilder: () => ({
     statusCode: 429,

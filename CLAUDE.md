@@ -159,7 +159,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS profiles_cpf_unique ON public.profiles (cpf) W
 - A RPC antiga `invite_member` e a edge function `invite-member` foram removidas (2026-10-17)
 
 ## Rate limiting (server.ts)
-- Global: 200 req/min por usuário (userId do JWT) ou IP como fallback
+- Global: 200 req/min por usuário ou por IP. A chave vem de `src/lib/rateLimitKey.ts` (EQZ-44):
+  - `user:<sub>` só se o JWT tiver assinatura ES256 válida (chaves públicas do JWKS do Supabase, verificadas localmente e guardadas por 10 min; `kid` desconhecido busca no máximo 1 vez por minuto) e não estiver vencido. Token forjado ou vencido conta pelo IP (antes, cada `sub` forjado ganhava um balde novo)
+  - IP: no Railway (`RAILWAY_ENVIRONMENT_NAME` definido) vem do `X-Real-IP` que a borda grava; o `req.ip` lá é o do proxy interno. Pelo site o IP é o da Vercel (rewrite), por isso quem está logado conta pelo usuário. Sem `trustProxy`: o `X-Forwarded-For` pode ser forjado
 - Criação de workspace/invite: 10 req/min (authStrict)
 - Mutações em geral: 60 req/min (authWrite)
 
