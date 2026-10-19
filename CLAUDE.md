@@ -81,7 +81,7 @@ database/
 - `POST /products` — cria produto; valida limite do plano; `code` é gerado automaticamente (`AUTO-XXXXXXXX`) se não informado (evita NOT NULL constraint para produtos importados via NFC-e)
 - `PATCH /products/:id` — atualiza produto (não aceita `qty`: estoque só muda por `/adjust`, que grava a movimentação)
 - `DELETE /products/:id` — remove produto (RLS exige owner/admin)
-- `POST /products/:id/adjust` — entrada/saída de estoque via RPC `adjust_product_qty` (atômico)
+- `POST /products/:id/adjust` — entrada/saída de estoque via RPC `adjust_product_qty` (atômico). `{ delta, reason?, motivo? }`: na saída, `motivo` é venda/perda/vencido/furto/uso_interno/devolucao (padrão venda); na entrada é ignorado
 - `POST /products/:id/count` — contagem do dia `{ counted }` (EQZ-17, Growth e Pro) via RPC `register_stock_count`: registra em `stock_counts` e, se não bater, corrige o estoque com "Ajuste de contagem"
 - `GET  /products/:id/movements?since=<iso>&limit=<n>` — histórico de movimentações
 
@@ -125,8 +125,8 @@ O slug `intermediate` foi renomeado para `growth` — constraint e dados já atu
 - `workspaces`        — id, name, description, plan, created_by, created_at, updated_at
 - `workspace_members` — workspace_id, user_id, role (owner/admin/member), status (ativo/pendente), invited_by, created_at
 - `profiles`          — id (= auth.uid), name, email, phone, avatar_color, cpf (unique, nullable)
-- `products`          — id, workspace_id, name, code (NOT NULL), category, unit, price, qty, min_qty, max_qty, location, supplier, image_url, nota_fiscal, created_by, created_at, updated_at
-- `movements`         — id, product_id, delta, reason, created_by, created_at
+- `products`          — id, workspace_id, name, code (NOT NULL), category, unit, price, cost (custo de compra, opcional; a nota preenche), qty, min_qty, max_qty, location, supplier, image_url, nota_fiscal, created_by, created_at, updated_at
+- `movements`         — id, product_id, delta, reason (texto livre), motivo (saída: venda/perda/vencido/furto/uso_interno/devolucao/ajuste_contagem; null na entrada), created_by, created_at
 - `subscriptions`     — id, workspace_id, plan, status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_subscription_id, stripe_price_id, created_at, updated_at, expired_at, warned_at
 - `nota_imports`      — notas importadas: workspace_id, chave (única por workspace), tipo, itens, imported_by, created_at
 - `trial_grants`      — trials concedidos: user_id (único), cpf_hash SHA-256 (único), workspace_id, granted_at. RLS sem policies: só a API acessa
@@ -144,7 +144,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS profiles_cpf_unique ON public.profiles (cpf) W
 ```
 
 ### RPCs (funções Postgres)
-- `adjust_product_qty(p_product_id uuid, p_delta numeric, p_reason, p_user_id)` — ajuste atômico de estoque + insert em movements (uma única versão, numeric; o autor é `auth.uid()`). SECURITY DEFINER: checa membro e `workspace_is_writable` por dentro
+- `adjust_product_qty(p_product_id, p_delta, p_motivo, p_reason, p_user_id)` — ajuste atômico de estoque + insert em movements com o motivo (EQZ-23; o autor é `auth.uid()`). SECURITY DEFINER: checa membro e `workspace_is_writable` por dentro. A versão antiga sem `p_motivo` continua (o estoque inicial do cadastro usa); como `p_motivo` não tem padrão, não há ambiguidade entre as duas
 - `accept_workspace_invite()` — chamada pelo frontend em `/set-password` após definir senha; ativa só um convite **pendente que já existe** (o papel vem do convite, nunca do user_metadata); não aceita anon
 - `import_nota_fiscal(p_workspace_id, p_chave, p_tipo, p_itens jsonb)` — importação de nota numa transação (ver `/nfe/importar`). SECURITY DEFINER: checa owner/admin e `workspace_is_writable` por dentro
 - `workspace_is_writable(ws)` — a assinatura permite escrita? (trial válido, ativo, past_due ou legado sem assinatura; só responde para membros). Usada nas policies de escrita

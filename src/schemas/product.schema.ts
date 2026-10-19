@@ -11,6 +11,8 @@ export const CreateProductSchema = z.object({
   code:         z.string().optional().nullable().transform((v) => (!v ? null : sanitizeCode(v) || null)),
   unit:         str(20).pipe(z.string().min(1, "Unidade é obrigatória")),
   price:        z.number().nonnegative("Preço não pode ser negativo").transform(round(2)),
+  /* Custo de compra (EQZ-23), opcional; null limpa */
+  cost:         z.nullable(z.number().nonnegative("Custo não pode ser negativo").transform(round(2))).optional(),
   qty:          z.number().nonnegative("Quantidade não pode ser negativa").transform(round(3)).default(0),
   min_qty:      z.number().nonnegative().transform(round(3)).default(0),
   max_qty:      z.number().nonnegative().transform(round(3)).optional(),
@@ -29,9 +31,14 @@ export const CountSchema = z.object({
   counted: z.number().nonnegative("A quantidade contada não pode ser negativa").transform(round(3)),
 });
 
+/* Motivos de saída (EQZ-23). "ajuste_contagem" só a contagem do dia grava */
+export const MOTIVOS_SAIDA = ["venda", "perda", "vencido", "furto", "uso_interno", "devolucao"] as const;
+
 export const AdjustQtySchema = z.object({
   delta:  z.number().transform(round(3)).refine((d) => d !== 0, "A quantidade deve ser diferente de zero"),
   reason: str(300).optional(),
+  /* Só vale na saída; sem ele a saída fica como "venda" */
+  motivo: z.enum(MOTIVOS_SAIDA).optional(),
 });
 
 export type CreateProductInput = z.infer<typeof CreateProductSchema>;

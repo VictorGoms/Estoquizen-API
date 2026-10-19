@@ -145,10 +145,12 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
     const token = req.headers.authorization!.slice(7);
     const db    = supabaseForUser(token);
 
-    /* Ajuste atômico via RPC — sem race condition, sem divergência */
+    /* Ajuste atômico via RPC — sem race condition, sem divergência. A versão com p_motivo grava o
+       motivo da saída (EQZ-23); na entrada o banco ignora o motivo */
     const { data, error } = await db.rpc("adjust_product_qty", {
       p_product_id: id,
       p_delta:      parsed.data.delta,
+      p_motivo:     parsed.data.delta < 0 ? parsed.data.motivo ?? "venda" : null,
       p_reason:     parsed.data.reason ?? null,
       p_user_id:    req.user.id,
     });
