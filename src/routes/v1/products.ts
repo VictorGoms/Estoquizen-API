@@ -9,8 +9,12 @@ import { assertActiveSubscription, getProductWorkspaceId } from "../../lib/check
 const productsRoutes: FastifyPluginAsync = async (fastify) => {
   const auth      = { preHandler: [fastify.authenticate] };
   const authWrite = { preHandler: [fastify.authenticate], config: { rateLimit: { max: 60, timeWindow: "1 minute" } } };
-  /* Importação de planilha grava até 2000 produtos por chamada */
-  const authImport = { preHandler: [fastify.authenticate], config: { rateLimit: { max: 10, timeWindow: "1 minute" } } };
+  /* Importação de planilha grava até 2000 produtos por chamada (com textos longos passa de 1 MB, o padrão) */
+  const authImport = {
+    preHandler: [fastify.authenticate],
+    bodyLimit:  3 * 1024 * 1024,
+    config:     { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  };
 
   /* GET /products?workspace_id=xxx */
   fastify.get("/products", auth, async (req, reply) => {
