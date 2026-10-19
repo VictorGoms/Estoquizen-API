@@ -82,6 +82,7 @@ database/
 - `PATCH /products/:id` — atualiza produto (não aceita `qty`: estoque só muda por `/adjust`, que grava a movimentação)
 - `DELETE /products/:id` — remove produto (RLS exige owner/admin)
 - `POST /products/:id/adjust` — entrada/saída de estoque via RPC `adjust_product_qty` (atômico)
+- `POST /products/:id/count` — contagem do dia `{ counted }` (EQZ-17, Growth e Pro) via RPC `register_stock_count`: registra em `stock_counts` e, se não bater, corrige o estoque com "Ajuste de contagem"
 - `GET  /products/:id/movements?since=<iso>&limit=<n>` — histórico de movimentações
 
 ### Workspaces — `src/routes/v1/workspaces.ts`
@@ -129,6 +130,7 @@ O slug `intermediate` foi renomeado para `growth` — constraint e dados já atu
 - `subscriptions`     — id, workspace_id, plan, status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_subscription_id, stripe_price_id, created_at, updated_at, expired_at, warned_at
 - `nota_imports`      — notas importadas: workspace_id, chave (única por workspace), tipo, itens, imported_by, created_at
 - `trial_grants`      — trials concedidos: user_id (único), cpf_hash SHA-256 (único), workspace_id, granted_at. RLS sem policies: só a API acessa
+- `stock_counts`      — contagens do dia (workspace_id, product_id, counted_by, expected_qty, counted_qty, created_at). Membros leem; só a RPC grava
 - `invite_log`        — cada e-mail de convite enviado (workspace_id, invited_by, created_at), para o limite diário. RLS sem policies
 
 Trigger `protect_workspace_owner` (BEFORE UPDATE/DELETE em `workspace_members`): só owner promove alguém a owner ou altera/remove outro owner, e o workspace nunca fica sem owner ativo. Vale também para as escritas diretas do front; o service_role passa direto.
@@ -150,6 +152,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS profiles_cpf_unique ON public.profiles (cpf) W
 - Trigger `products_plan_limit` (BEFORE INSERT em products): limite de produtos do plano no banco (`plan_product_limit`: 50/300/2000, os mesmos de `plans.ts`), vale também para a RPC de nota. Mudou o limite em `plans.ts`? Mude a função também
 - `stock_forecast(workspace_id)` — saídas dos últimos 30 dias por produto, para a previsão "dura ~X dias" do front (EQZ-16). SECURITY INVOKER (a RLS vale)
 - `stock_last_outflow(workspace_id)` — data da última saída de cada produto, para o "R$ parados" (EQZ-18). SECURITY INVOKER
+- `register_stock_count(product_id, counted)` — contagem do dia numa transação (produto travado). SECURITY DEFINER: checa membro, `workspace_is_writable` e plano Growth/Pro
 - `email_exists(p_email text) → boolean` — verifica se email existe em auth.users. Ninguém usa mais: só o service_role executa (SCRUM-65, ela deixava descobrir quem tem conta)
 - A RPC antiga `invite_member` e a edge function `invite-member` foram removidas (2026-10-17)
 

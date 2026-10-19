@@ -24,6 +24,11 @@ export const CreateProductSchema = z.object({
 /* Sem qty: estoque só muda por /adjust, que grava a movimentação (o PATCH mudava sem histórico) */
 export const UpdateProductSchema = CreateProductSchema.partial().omit({ workspace_id: true, qty: true });
 
+/* Contagem do dia (EQZ-17): quanto a pessoa contou na prateleira */
+export const CountSchema = z.object({
+  counted: z.number().nonnegative("A quantidade contada não pode ser negativa").transform(round(3)),
+});
+
 export const AdjustQtySchema = z.object({
   delta:  z.number().transform(round(3)).refine((d) => d !== 0, "A quantidade deve ser diferente de zero"),
   reason: str(300).optional(),

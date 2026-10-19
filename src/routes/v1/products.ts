@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
-import { CreateProductSchema, UpdateProductSchema, AdjustQtySchema } from "../../schemas/product.schema.js";
+import { CreateProductSchema, UpdateProductSchema, AdjustQtySchema, CountSchema } from "../../schemas/product.schema.js";
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { getLimits } from "../../lib/plans.js";
@@ -158,6 +158,28 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
       const status = error.message.includes("Acesso negado") ? 403 : isNotFound ? 400 : 500;
       return reply.status(status).send(fail(dbError(error)));
     }
+    return reply.send(ok(data));
+  });
+
+  /* POST /products/:id/count — contagem do dia (EQZ-17, Growth e Pro). A RPC register_stock_count
+     registra a contagem e, se não bater, corrige o estoque com a movimentação "Ajuste de contagem". */
+  fastify.post("/products/:id/count", authWrite, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = CountSchema.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
+
+    const wsId = await getProductWorkspaceId(id);
+    if (!wsId) return reply.status(404).send(fail("Produto não encontrado."));
+    if (!await assertActiveSubscription(wsId, reply)) return;
+
+    const token = req.headers.authorization!.slice(7);
+    const { data, error } = await supabaseForUser(token).rpc("register_stock_count", {
+      p_product_id: id,
+      p_counted:    parsed.data.counted,
+    });
+
+    /* 42501 (sem acesso, somente leitura, fora do plano) vira 403 com a mensagem da RPC */
+    if (error) return sendDbError(req, reply, error);
     return reply.send(ok(data));
   });
 
