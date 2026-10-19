@@ -41,6 +41,29 @@ export const AdjustQtySchema = z.object({
   motivo: z.enum(MOTIVOS_SAIDA).optional(),
 });
 
+/* Importação de planilha (EQZ-14): o front lê o arquivo e manda os produtos já mapeados.
+   O teto evita estourar as colunas numeric(12,x) do banco. */
+const MAX_NUM = 999_999_999;
+const numImport = (casas: number) =>
+  z.number().nonnegative("Número negativo na planilha").max(MAX_NUM, "Número grande demais na planilha").transform(round(casas));
+
+export const ImportProductsSchema = z.object({
+  workspace_id: z.string().uuid("workspace_id inválido"),
+  itens: z.array(z.object({
+    name:     str(200).pipe(z.string().min(2, "Todo produto precisa de um nome com ao menos 2 letras")),
+    code:     z.string().optional().nullable().transform((v) => (!v ? null : sanitizeCode(v) || null)),
+    unit:     z.nullable(str(20)).optional(),
+    qty:      numImport(3).optional(),
+    price:    numImport(2).optional(),
+    cost:     z.nullable(numImport(2)).optional(),
+    min_qty:  numImport(3).optional(),
+    max_qty:  z.nullable(numImport(3)).optional(),
+    category: z.nullable(str(60)).optional(),
+    supplier: z.nullable(str(200)).optional(),
+    location: z.nullable(str(200)).optional(),
+  })).min(1, "A planilha não tem produtos para importar").max(2000, "Importe até 2000 produtos por vez"),
+});
+
 export type CreateProductInput = z.infer<typeof CreateProductSchema>;
 export type UpdateProductInput = z.infer<typeof UpdateProductSchema>;
 export type AdjustQtyInput     = z.infer<typeof AdjustQtySchema>;

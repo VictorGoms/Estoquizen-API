@@ -1,13 +1,16 @@
 import type { FastifyPluginAsync } from "fastify";
-import { CreateProductSchema, UpdateProductSchema, AdjustQtySchema, CountSchema } from "../../schemas/product.schema.js";
+import { CreateProductSchema, UpdateProductSchema, AdjustQtySchema, CountSchema, ImportProductsSchema } from "../../schemas/product.schema.js";
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { getLimits } from "../../lib/plans.js";
+import { requireMember } from "../../lib/membership.js";
 import { assertActiveSubscription, getProductWorkspaceId } from "../../lib/checkSubscription.js";
 
 const productsRoutes: FastifyPluginAsync = async (fastify) => {
   const auth      = { preHandler: [fastify.authenticate] };
   const authWrite = { preHandler: [fastify.authenticate], config: { rateLimit: { max: 60, timeWindow: "1 minute" } } };
+  /* Importação de planilha grava até 2000 produtos por chamada */
+  const authImport = { preHandler: [fastify.authenticate], config: { rateLimit: { max: 10, timeWindow: "1 minute" } } };
 
   /* GET /products?workspace_id=xxx */
   fastify.get("/products", auth, async (req, reply) => {
@@ -107,6 +110,50 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(201).send(ok({ ...data, qty: (adjusted as { qty: number }).qty }));
     }
 
+    return reply.status(201).send(ok(data));
+  });
+
+  /* POST /products/import — importa os produtos de uma planilha (EQZ-14) numa transação só
+     (RPC import_products). Código que já existe no workspace é pulado e volta em "ignorados". */
+  fastify.post("/products/import", authImport, async (req, reply) => {
+    const parsed = ImportProductsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const issue = parsed.error.errors[0];
+      const linha = issue.path[0] === "itens" && typeof issue.path[1] === "number" ? ` (linha ${issue.path[1] + 1} da importação)` : "";
+      return reply.status(400).send(fail(issue.message + linha));
+    }
+
+    const { workspace_id, itens } = parsed.data;
+
+    if (!await requireMember(workspace_id, req.user.id, reply, ["owner", "admin"])) return;
+    if (!await assertActiveSubscription(workspace_id, reply)) return;
+
+    /* Mensagem clara antes de tentar; a trigger products_plan_limit garante no banco */
+    const { data: ws } = await supabaseAdmin.from("workspaces").select("plan").eq("id", workspace_id).single();
+    const limits = getLimits(ws?.plan ?? "basic");
+    const { count } = await supabaseAdmin
+      .from("products")
+      .select("id", { count: "exact", head: true })
+      .eq("workspace_id", workspace_id);
+
+    if ((count ?? 0) + itens.length > limits.products) {
+      const cabem = Math.max(limits.products - (count ?? 0), 0);
+      return reply.status(403).send(fail(
+        `Limite do plano ${limits.label}: cabem mais ${cabem} produtos (máximo de ${limits.products}) ` +
+        `e a planilha tem ${itens.length}. Faça upgrade ou importe menos linhas.`
+      ));
+    }
+
+    const token = req.headers.authorization!.slice(7);
+    const { data, error } = await supabaseForUser(token).rpc("import_products", {
+      p_workspace_id: workspace_id,
+      p_itens:        itens,
+    });
+
+    if (error) {
+      if (error.code === "22023") return reply.status(400).send(fail(error.message));
+      return sendDbError(req, reply, error);
+    }
     return reply.status(201).send(ok(data));
   });
 

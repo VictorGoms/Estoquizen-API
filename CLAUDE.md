@@ -84,6 +84,7 @@ database/
 - `POST /products/:id/adjust` — entrada/saída de estoque via RPC `adjust_product_qty` (atômico). `{ delta, reason?, motivo? }`: na saída, `motivo` é venda/perda/vencido/furto/uso_interno/devolucao (padrão venda); na entrada é ignorado
 - `POST /products/:id/count` — contagem do dia `{ counted }` (EQZ-17, Growth e Pro) via RPC `register_stock_count`: registra em `stock_counts` e, se não bater, corrige o estoque com "Ajuste de contagem"
 - `GET  /products/:id/movements?since=<iso>&limit=<n>` — histórico de movimentações
+- `POST /products/import` — importação de planilha (EQZ-14) `{ workspace_id, itens[] }` (até 2000; o front lê o CSV/Excel e manda as colunas já mapeadas). Owner/admin, assinatura ativa, limite do plano. RPC `import_products` grava tudo numa transação; código que já existe no workspace é pulado (`{ criados, ignorados }`) e quantidade > 0 vira "Estoque inicial (planilha)"
 
 ### Workspaces — `src/routes/v1/workspaces.ts`
 - `GET  /workspaces` — workspaces do usuário autenticado (via RLS)
@@ -152,6 +153,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS profiles_cpf_unique ON public.profiles (cpf) W
 - Trigger `products_plan_limit` (BEFORE INSERT em products): limite de produtos do plano no banco (`plan_product_limit`: 50/300/2000, os mesmos de `plans.ts`), vale também para a RPC de nota. Mudou o limite em `plans.ts`? Mude a função também
 - `stock_forecast(workspace_id)` — saídas dos últimos 30 dias por produto, para a previsão "dura ~X dias" do front (EQZ-16). SECURITY INVOKER (a RLS vale)
 - `stock_last_outflow(workspace_id)` — data da última saída de cada produto, para o "R$ parados" (EQZ-18). SECURITY INVOKER
+- `import_products(p_workspace_id, p_itens jsonb)` — importação de planilha numa transação (ver `POST /products/import`). SECURITY DEFINER: checa owner/admin e `workspace_is_writable`, trava o workspace; o limite do plano vale pela trigger
 - `register_stock_count(product_id, counted)` — contagem do dia numa transação (produto travado). SECURITY DEFINER: checa membro, `workspace_is_writable` e plano Growth/Pro
 - `email_exists(p_email text) → boolean` — verifica se email existe em auth.users. Ninguém usa mais: só o service_role executa (SCRUM-65, ela deixava descobrir quem tem conta)
 - A RPC antiga `invite_member` e a edge function `invite-member` foram removidas (2026-10-17)
