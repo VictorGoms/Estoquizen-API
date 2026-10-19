@@ -39,7 +39,7 @@ flowchart LR
 | Camada | Tecnologia |
 |---|---|
 | Runtime | Node.js + TypeScript (ESM) |
-| Framework | Fastify 4 |
+| Framework | Fastify 5 |
 | Banco / Auth | Supabase (Postgres, RLS, funções PL/pgSQL), sem ORM |
 | Validação | Zod |
 | Pagamentos | Stripe (Checkout, Billing Portal, Webhooks) |

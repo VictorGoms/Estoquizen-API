@@ -5,7 +5,7 @@ SaaS de gestão de estoque multi-tenant. O backend é uma API REST que serve o f
 
 ## Stack
 - Runtime: Node.js + TypeScript (ESM, `"module": "NodeNext"`)
-- Framework: Fastify v4
+- Framework: Fastify v5
 - Banco: Supabase (Postgres) — sem Prisma, sem ORM
 - Validação: Zod (sempre antes de tocar o banco)
 - Auth: Supabase Auth (JWT verificado via `supabaseAdmin.auth.getUser`)
