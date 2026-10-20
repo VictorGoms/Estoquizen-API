@@ -3,8 +3,13 @@ import { CreateProductSchema, UpdateProductSchema, AdjustQtySchema, CountSchema,
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { getLimits } from "../../lib/plans.js";
-import { requireMember } from "../../lib/membership.js";
+import { requireMember, type Role } from "../../lib/membership.js";
 import { assertActiveSubscription, getProductWorkspaceId } from "../../lib/checkSubscription.js";
+
+/* Cadastrar, editar e excluir produto é de dono e admin (SCRUM-62). Entrada, saída e contagem
+   ficam com qualquer membro: as RPCs só exigem ser do workspace */
+const GESTORES: Role[] = ["owner", "admin"];
+const SO_GESTORES = "Só donos e administradores podem cadastrar, editar ou excluir produtos.";
 
 const productsRoutes: FastifyPluginAsync = async (fastify) => {
   const auth      = { preHandler: [fastify.authenticate] };
@@ -55,6 +60,7 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
     const parsed = CreateProductSchema.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
 
+    if (!await requireMember(parsed.data.workspace_id, req.user.id, reply, GESTORES, SO_GESTORES)) return;
     if (!await assertActiveSubscription(parsed.data.workspace_id, reply)) return;
 
     const token = req.headers.authorization!.slice(7);
@@ -168,7 +174,9 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
     if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
 
     const wsId = await getProductWorkspaceId(id);
-    if (wsId && !await assertActiveSubscription(wsId, reply)) return;
+    if (!wsId) return reply.status(404).send(fail("Produto não encontrado."));
+    if (!await requireMember(wsId, req.user.id, reply, GESTORES, SO_GESTORES)) return;
+    if (!await assertActiveSubscription(wsId, reply)) return;
 
     const token = req.headers.authorization!.slice(7);
     const db    = supabaseForUser(token);
@@ -266,7 +274,9 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
     const { id } = req.params as { id: string };
 
     const wsId = await getProductWorkspaceId(id);
-    if (wsId && !await assertActiveSubscription(wsId, reply)) return;
+    if (!wsId) return reply.status(404).send(fail("Produto não encontrado."));
+    if (!await requireMember(wsId, req.user.id, reply, GESTORES, SO_GESTORES)) return;
+    if (!await assertActiveSubscription(wsId, reply)) return;
 
     const token  = req.headers.authorization!.slice(7);
     const db     = supabaseForUser(token);

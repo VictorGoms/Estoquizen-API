@@ -81,11 +81,12 @@ database/
 ### Produtos — `src/routes/v1/products.ts`
 - `GET  /products?workspace_id=xxx` — lista produtos do workspace (usa RLS)
 - `GET  /products/:id` — detalhe do produto
-- `POST /products` — cria produto; valida limite do plano; `code` é gerado automaticamente (`AUTO-XXXXXXXX`) se não informado (evita NOT NULL constraint para produtos importados via NFC-e)
-- `PATCH /products/:id` — atualiza produto (não aceita `qty`: estoque só muda por `/adjust`, que grava a movimentação)
-- `DELETE /products/:id` — remove produto (RLS exige owner/admin)
-- `POST /products/:id/adjust` — entrada/saída de estoque via RPC `adjust_product_qty` (atômico). `{ delta, reason?, motivo? }`: na saída, `motivo` é venda/perda/vencido/furto/uso_interno/devolucao (padrão venda); na entrada é ignorado
-- `POST /products/:id/count` — contagem do dia `{ counted }` (EQZ-17, Growth e Pro) via RPC `register_stock_count`: registra em `stock_counts` e, se não bater, corrige o estoque com "Ajuste de contagem"
+- `POST /products` — cria produto (owner/admin); valida limite do plano; `code` é gerado automaticamente (`AUTO-XXXXXXXX`) se não informado (evita NOT NULL constraint para produtos importados via NFC-e)
+- `PATCH /products/:id` — atualiza produto, owner/admin (não aceita `qty`: estoque só muda por `/adjust`, que grava a movimentação)
+- `DELETE /products/:id` — remove produto (owner/admin: a rota responde 403 e a RLS também exige)
+- Papéis (SCRUM-62, 2026-10-20): cadastrar, editar e excluir produto é de owner/admin, na rota (`requireMember`) e nas policies `Admin/Owner cria/atualiza/deleta produtos`. Entrada, saída e contagem são de qualquer membro ativo (as RPCs só exigem ser do workspace)
+- `POST /products/:id/adjust` — entrada/saída de estoque (qualquer membro) via RPC `adjust_product_qty` (atômico). `{ delta, reason?, motivo? }`: na saída, `motivo` é venda/perda/vencido/furto/uso_interno/devolucao (padrão venda); na entrada é ignorado
+- `POST /products/:id/count` — contagem do dia `{ counted }` (EQZ-17, Growth e Pro, qualquer membro) via RPC `register_stock_count`: registra em `stock_counts` e, se não bater, corrige o estoque com "Ajuste de contagem"
 - `GET  /products/:id/movements?since=<iso>&limit=<n>` — histórico de movimentações
 - `POST /products/import` — importação de planilha (EQZ-14) `{ workspace_id, itens[] }` (até 2000; o front lê o CSV/Excel e manda as colunas já mapeadas). Owner/admin, assinatura ativa, limite do plano. RPC `import_products` grava tudo numa transação; código que já existe no workspace é pulado (`{ criados, ignorados }`) e quantidade > 0 vira "Estoque inicial (planilha)"
 
