@@ -7,6 +7,9 @@ import { expireTrialIfDue } from "../../lib/checkSubscription.js";
 
 const OWNER_ONLY = "Só o owner do workspace pode gerenciar a assinatura.";
 
+/* O Stripe não tem mais o objeto (apagado, ou de outra conta/área restrita) */
+const stripeMissing = (err: unknown) => (err as { code?: string } | null)?.code === "resource_missing";
+
 const billingRoutes: FastifyPluginAsync = async (fastify) => {
   const auth = { preHandler: [fastify.authenticate] };
 
@@ -79,8 +82,12 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
           return reply.send(ok({ url: portal.url }));
         }
       } catch (err) {
-        req.log.error({ err, workspace_id }, "falha ao abrir a troca de plano no portal");
-        return reply.status(502).send(fail("Não foi possível abrir a troca de plano. Tente novamente."));
+        /* Assinatura gravada que não existe mais no Stripe (ex.: dado de teste antigo): segue para o checkout */
+        if (!stripeMissing(err)) {
+          req.log.error({ err, workspace_id }, "falha ao abrir a troca de plano no portal");
+          return reply.status(502).send(fail("Não foi possível abrir a troca de plano. Tente novamente."));
+        }
+        req.log.warn({ workspace_id }, "assinatura gravada não existe no Stripe; abrindo checkout novo");
       }
     }
 
@@ -90,8 +97,15 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
       .eq("id", workspace_id)
       .single();
 
-    /* Cria ou reutiliza Stripe Customer */
+    /* Cria ou reutiliza Stripe Customer (o gravado pode ter sido apagado no Stripe) */
     let customerId = sub?.stripe_customer_id ?? null;
+    if (customerId) {
+      const existing = await stripe.customers.retrieve(customerId).catch((err) => {
+        if (stripeMissing(err)) return null;
+        throw err;
+      });
+      if (!existing || existing.deleted) customerId = null;
+    }
     if (!customerId) {
       const { data: { user } } = await supabaseAdmin.auth.admin.getUserById(req.user.id);
       const customer = await stripe.customers.create({
