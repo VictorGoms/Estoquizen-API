@@ -45,17 +45,50 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
 
     const { data: sub } = await supabaseAdmin
       .from("subscriptions")
-      .select("stripe_customer_id")
+      .select("stripe_customer_id, stripe_subscription_id, status")
       .eq("workspace_id", workspace_id)
       .maybeSingle();
+
+    const siteUrl = (process.env.ALLOWED_ORIGINS ?? "https://estoquizen.vercel.app").split(",")[0].trim();
+
+    /* Quem já paga troca de plano na assinatura atual, pela tela de confirmação do portal (mostra o
+       valor proporcional). Um checkout novo criaria uma segunda assinatura e cobraria duas vezes. */
+    if (sub?.stripe_subscription_id && ["active", "past_due"].includes(sub.status)) {
+      try {
+        const current = await stripe.subscriptions.retrieve(sub.stripe_subscription_id);
+        const item    = current.items.data[0];
+        if (["active", "past_due"].includes(current.status) && item) {
+          if (item.price.id === priceId) return reply.status(409).send(fail("Este já é o plano atual."));
+
+          const portal = await stripe.billingPortal.sessions.create({
+            customer:   typeof current.customer === "string" ? current.customer : current.customer.id,
+            locale:     "pt-BR",
+            return_url: `${siteUrl}/configuracoes`,
+            flow_data: {
+              type: "subscription_update_confirm",
+              subscription_update_confirm: {
+                subscription: current.id,
+                items: [{ id: item.id, price: priceId, quantity: 1 }],
+              },
+              after_completion: {
+                type:     "redirect",
+                redirect: { return_url: `${siteUrl}/configuracoes?plano=atualizado` },
+              },
+            },
+          });
+          return reply.send(ok({ url: portal.url }));
+        }
+      } catch (err) {
+        req.log.error({ err, workspace_id }, "falha ao abrir a troca de plano no portal");
+        return reply.status(502).send(fail("Não foi possível abrir a troca de plano. Tente novamente."));
+      }
+    }
 
     const { data: ws } = await supabaseAdmin
       .from("workspaces")
       .select("name")
       .eq("id", workspace_id)
       .single();
-
-    const siteUrl = (process.env.ALLOWED_ORIGINS ?? "https://estoquizen.vercel.app").split(",")[0].trim();
 
     /* Cria ou reutiliza Stripe Customer */
     let customerId = sub?.stripe_customer_id ?? null;

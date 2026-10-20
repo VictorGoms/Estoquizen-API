@@ -16,7 +16,7 @@ interface PlanLimits {
 }
 
 /* Planos fechados pelo João em 2026-10-17 (EQZ-27): equipe 3/10/sem limite, ler nota 2 por mês
-   no Basic e métricas de 30 dias / 3 meses / 12 meses. Os preços novos dependem do Stripe. */
+   no Basic e métricas de 30 dias / 3 meses / 12 meses. Preços da EQZ-11 no Stripe desde 2026-10-20. */
 
 export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
   basic: {
@@ -24,7 +24,7 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     products:     50,
     members:      3,
     dailyInvites: 10,
-    price:        19.90,
+    price:        24.90,
     notasPorMes:  2,
     metricasDias: 30,
   },
@@ -33,7 +33,7 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     products:     300,
     members:      10,
     dailyInvites: 25,
-    price:        29.90,
+    price:        39.90,
     notasPorMes:  null,
     metricasDias: 90,
   },

@@ -114,12 +114,12 @@ database/
 
 ## Planos — `src/lib/plans.ts`
 ```
-basic  → R$19,90/mês → 50 produtos,   3 membros,       10 convites/dia, 2 notas/mês,  métricas 30 dias
-growth → R$29,90/mês → 300 produtos,  10 membros,      25 convites/dia, notas livres, métricas 3 meses
+basic  → R$24,90/mês → 50 produtos,   3 membros,       10 convites/dia, 2 notas/mês,  métricas 30 dias
+growth → R$39,90/mês → 300 produtos,  10 membros,      25 convites/dia, notas livres, métricas 3 meses
 pro    → R$59,90/mês → 2000 produtos, membros sem limite, 50 convites/dia, notas livres, métricas 12 meses
 ```
 Limites verificados no servidor em `POST /products` e `POST /members/invite`.
-Planos fechados pelo João em 2026-10-17 (EQZ-27, substitui o SCRUM-57): equipe 3/10/sem limite, Basic lê até 2 notas de compra por mês (cota conferida em `/nfe/*` e na RPC `import_nota_fiscal`, mês no horário de Brasília) e métricas de 30 dias/3 meses/12 meses (aplicadas no front, `usePlan`). Os preços novos da tabela (Basic R$ 24,90, Growth R$ 39,90) ainda não foram aplicados: dependem de preços novos no Stripe.
+Planos fechados pelo João em 2026-10-17 (EQZ-27, substitui o SCRUM-57): equipe 3/10/sem limite, Basic lê até 2 notas de compra por mês (cota conferida em `/nfe/*` e na RPC `import_nota_fiscal`, mês no horário de Brasília) e métricas de 30 dias/3 meses/12 meses (aplicadas no front, `usePlan`). Preços novos (EQZ-11) aplicados em 2026-10-20: Prices novos no Stripe para Basic (R$ 24,90) e Growth (R$ 39,90), os antigos arquivados; assinatura antiga continua no preço dela e o plano vem do `metadata.plan` da assinatura.
 O slug `intermediate` foi renomeado para `growth` — constraint e dados já atualizados no Supabase.
 
 ## Tabelas do Supabase
@@ -249,8 +249,8 @@ As variáveis `SMTP_*` não são mais usadas (o `mailer.ts` foi removido).
 ### Planos
 | Slug no banco | Label | Preço | Produtos | Membros |
 |---|---|---|---|---|
-| `basic` | Basic | R$19,90/mês | 50 | 3 |
-| `growth` | Growth | R$29,90/mês | 300 | 10 |
+| `basic` | Basic | R$24,90/mês | 50 | 3 |
+| `growth` | Growth | R$39,90/mês | 300 | 10 |
 | `pro` | Pro | R$59,90/mês | 2000 | sem limite |
 
 ### Modelo de trial
@@ -337,9 +337,10 @@ POST /webhooks/stripe           — recebe eventos do Stripe
 ```
 Não existem `/billing/cancel` nem `/billing/upgrade`: cancelamento e cartão ficam no portal (em pt-BR).
 Cancelar a assinatura (fim do ciclo, dados ficam) e excluir o workspace (`DELETE /workspaces/:id`, apaga tudo e cancela na hora) são ações separadas no front (SCRUM-63).
-**Pendente (SCRUM-47 parte 2):** quem já assina e clica em upgrade ganha uma **segunda assinatura** pelo checkout.
-O código que manda essas pessoas para a tela de confirmação do portal (`subscription_update_confirm`)
-está escrito, mas não commitado, até ligarem "Clientes podem trocar de plano" no portal do Stripe.
+**Troca de plano (SCRUM-47 parte 2):** quem já assina (`active`/`past_due` com `stripe_subscription_id`) e pede outro plano
+em `/billing/checkout` não ganha uma segunda assinatura: recebe um link do portal com `subscription_update_confirm`
+(409 se já for o plano atual). O portal (modo de teste) tem "Clientes podem trocar de plano" ligado com os 3 preços atuais,
+cobrança proporcional na hora (`always_invoice`) e downgrade imediato. O modo real tem configuração separada: repetir ao virar.
 
 **CRÍTICO no webhook:**
 - Rota `/webhooks/stripe` **NÃO tem** `preHandler: [fastify.authenticate]` — o Stripe não envia JWT
@@ -421,5 +422,4 @@ CRON_SECRET=...                        # segredo para chamar POST /admin/cleanup
 15. Webhook cadastrado no Stripe Dashboard com eventos: `checkout.session.completed`, `customer.subscription.deleted/updated`, `invoice.paid`, `invoice.payment_failed`
 
 #### 🔜 Pendente
-- Troca de plano sem segunda assinatura (SCRUM-47 parte 2) — ver "Rotas de billing"
 - Lista completa de tarefas: quadro do projeto no Obsidian (`Projetos/Estoquizen - Quadro.md`)
