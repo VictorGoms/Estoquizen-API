@@ -5,8 +5,15 @@ import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { requireMember } from "../../lib/membership.js";
 import { expireTrialIfDue } from "../../lib/checkSubscription.js";
 import { getLimits } from "../../lib/plans.js";
+import { CancelFeedbackSchema } from "../../schemas/billing.schema.js";
 
 const OWNER_ONLY = "Só o owner do workspace pode gerenciar a assinatura.";
+
+const DIA_MS = 24 * 60 * 60 * 1000;
+/* EQZ-07: a pausa anula a mensalidade que vence no período e volta 2 dias depois dela
+   (folga para a fatura da renovação já ter sido criada e anulada). 1 pausa por ano */
+const PAUSA_FOLGA_DIAS   = 2;
+const PAUSA_INTERVALO_MS = 365 * DIA_MS;
 
 /* O Stripe não tem mais o objeto (apagado, ou de outra conta/área restrita) */
 const stripeMissing = (err: unknown) => (err as { code?: string } | null)?.code === "resource_missing";
@@ -55,7 +62,14 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
     if (error) return sendDbError(req, reply, error);
     if (!data)  return reply.status(404).send(fail("Assinatura não encontrada"));
 
-    return reply.send(ok(data));
+    /* EQZ-07: a tela não calcula datas na renderização, então a API diz se a cobrança está
+       pausada e se a pausa (1 por ano, só assinatura paga em dia) ainda pode ser usada */
+    const agora    = Date.now();
+    const pausada  = !!data.paused_until && new Date(data.paused_until).getTime() > agora;
+    const pausaDisponivel = data.status === "active" && !!data.stripe_subscription_id && !data.cancel_at_period_end && !pausada
+      && (!data.last_paused_at || agora - new Date(data.last_paused_at).getTime() >= PAUSA_INTERVALO_MS);
+
+    return reply.send(ok({ ...data, pausada, pausa_disponivel: pausaDisponivel }));
   });
 
   /* POST /billing/checkout — cria Stripe Checkout Session */
@@ -214,6 +228,80 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
     } catch (err) {
       req.log.error({ err, workspace_id, flow }, "falha ao abrir o portal do Stripe");
       return reply.status(502).send(fail("Não foi possível abrir o portal de cobrança. Tente novamente."));
+    }
+  });
+
+  /* POST /billing/cancel-feedback — a resposta da única pergunta do cancelamento (EQZ-07) e o que a
+     pessoa fez depois (cancelar, pausar ou trocar de plano). O front manda antes de agir; falhar
+     aqui não impede a ação */
+  fastify.post("/billing/cancel-feedback", auth, async (req, reply) => {
+    const parsed = CancelFeedbackSchema.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
+    const { workspace_id, motivo, detalhe, acao } = parsed.data;
+
+    if (!await requireMember(workspace_id, req.user.id, reply, ["owner"], OWNER_ONLY)) return;
+
+    const { data: ws } = await supabaseAdmin.from("workspaces").select("plan").eq("id", workspace_id).maybeSingle();
+    const { error } = await supabaseAdmin.from("cancel_feedback").insert({
+      workspace_id, user_id: req.user.id, plan: ws?.plan ?? null, motivo, detalhe: detalhe || null, acao,
+    });
+    if (error) return sendDbError(req, reply, error);
+    return reply.status(201).send(ok(null));
+  });
+
+  /* POST /billing/pause — pausa a cobrança por 1 mês em vez de cancelar (EQZ-07). Usa o
+     pause_collection do Stripe com faturas anuladas: a assinatura continua ativa, o acesso também,
+     e a mensalidade que vence no período não é cobrada. A cobrança volta sozinha */
+  fastify.post("/billing/pause", auth, async (req, reply) => {
+    const { workspace_id } = req.body as { workspace_id?: string };
+    if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
+
+    if (!await requireMember(workspace_id, req.user.id, reply, ["owner"], OWNER_ONLY)) return;
+
+    const { data: sub } = await supabaseAdmin
+      .from("subscriptions")
+      .select("stripe_subscription_id, status, cancel_at_period_end, paused_until, last_paused_at")
+      .eq("workspace_id", workspace_id)
+      .maybeSingle();
+
+    if (!sub?.stripe_subscription_id || sub.status !== "active") {
+      return reply.status(400).send(fail("Só dá para pausar uma assinatura paga e em dia."));
+    }
+    if (sub.cancel_at_period_end) {
+      return reply.status(409).send(fail("A assinatura já está com cancelamento agendado."));
+    }
+    if (sub.paused_until && new Date(sub.paused_until) > new Date()) {
+      return reply.status(409).send(fail("A cobrança já está pausada."));
+    }
+    if (sub.last_paused_at && Date.now() - new Date(sub.last_paused_at).getTime() < PAUSA_INTERVALO_MS) {
+      return reply.status(409).send(fail("A pausa pode ser usada uma vez por ano, e já foi usada nos últimos 12 meses."));
+    }
+
+    try {
+      const atual = await stripe.subscriptions.retrieve(sub.stripe_subscription_id);
+      const fim   = atual.items.data[0]?.current_period_end;
+      if (!fim || fim * 1000 <= Date.now()) {
+        return reply.status(409).send(fail("Não foi possível achar a próxima mensalidade. Tente de novo em instantes."));
+      }
+      const voltaEm = fim + PAUSA_FOLGA_DIAS * 24 * 60 * 60;
+
+      await stripe.subscriptions.update(sub.stripe_subscription_id, {
+        pause_collection: { behavior: "void", resumes_at: voltaEm },
+      });
+
+      const pausedUntil = new Date(voltaEm * 1000).toISOString();
+      const { error } = await supabaseAdmin
+        .from("subscriptions")
+        .update({ paused_until: pausedUntil, last_paused_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq("workspace_id", workspace_id);
+      /* O webhook customer.subscription.updated grava paused_until de novo; last_paused_at só aqui */
+      if (error) req.log.error({ err: error, workspace_id }, "pausa feita no Stripe, mas não gravou no banco");
+
+      return reply.send(ok({ paused_until: pausedUntil, mensalidade_pulada: new Date(fim * 1000).toISOString() }));
+    } catch (err) {
+      if (stripeMissing(err)) return reply.status(409).send(fail("A assinatura não foi encontrada no Stripe."));
+      req.log.error({ err, workspace_id }, "falha ao pausar a cobrança no Stripe");
+      return reply.status(502).send(fail("Não foi possível pausar a cobrança. Tente novamente."));
     }
   });
 };

@@ -3,7 +3,7 @@ import Stripe from "stripe";
 import { stripe, PRICE_IDS } from "../lib/stripe.js";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { getLimits } from "../lib/plans.js";
-import { sendSubscriptionConfirmedEmail } from "../lib/resend.js";
+import { sendSubscriptionConfirmedEmail, sendPlanChangedEmail, sendCancelScheduledEmail } from "../lib/resend.js";
 
 type LocalStatus = "active" | "past_due" | "canceled";
 
@@ -70,6 +70,52 @@ async function avisarAssinaturaConfirmada(
     if (error) log.error({ err: error, wsId }, "e-mail de assinatura enviado, mas a marca não gravou");
   } catch (err) {
     log.error({ err, wsId, subId }, "falha ao mandar o e-mail de assinatura confirmada");
+  }
+}
+
+const ORDEM_PLANOS = ["basic", "growth", "pro"];
+
+/*
+ * E-mails de mudança numa assinatura paga que já existia (EQZ-07): plano trocado pelo portal e
+ * cancelamento agendado. A mudança vem do previous_attributes do evento, não do banco: o
+ * invoice.paid da troca também grava o plano novo e pode chegar antes. Só vale para a assinatura
+ * já gravada no workspace (a primeira compra tem o e-mail "Assinatura confirmada").
+ * Falha no e-mail só vai para o log.
+ */
+async function avisarMudancaNaAssinatura(
+  wsId: string, sub: Stripe.Subscription, anterior: Partial<Stripe.Subscription> | undefined,
+  subGravada: string | null | undefined,
+  log: { error: (obj: object, msg: string) => void },
+) {
+  if (!anterior || subGravada !== sub.id) return;
+  const plan        = planOf(sub);
+  const precoAntes  = anterior.items?.data?.[0]?.price?.id;
+  const planoAntes  = precoAntes ? Object.entries(PRICE_IDS).find(([, id]) => id && id === precoAntes)?.[0] : undefined;
+  const trocou      = !!planoAntes && planoAntes !== plan;
+  const cancelando  = sub.cancel_at_period_end || sub.cancel_at !== null;
+  const mudouCancel = "cancel_at_period_end" in anterior || "cancel_at" in anterior;
+  const agendou     = cancelando && mudouCancel && !anterior.cancel_at_period_end && !anterior.cancel_at;
+  if (!trocou && !agendou) return;
+
+  try {
+    const { data: ws } = await supabaseAdmin.from("workspaces").select("name, created_by").eq("id", wsId).maybeSingle();
+    if (!ws) return;
+    const { data: dono } = await supabaseAdmin.from("profiles").select("email").eq("id", ws.created_by).maybeSingle();
+    if (!dono?.email) return;
+
+    if (trocou) {
+      await sendPlanChangedEmail({
+        to: dono.email, workspaceName: ws.name,
+        de: getLimits(planoAntes!).label, para: getLimits(plan).label, preco: getLimits(plan).price,
+        subiu: ORDEM_PLANOS.indexOf(plan) > ORDEM_PLANOS.indexOf(planoAntes!),
+      });
+    }
+    if (agendou) {
+      const fim = sub.cancel_at ?? sub.items.data[0]?.current_period_end;
+      if (fim) await sendCancelScheduledEmail({ to: dono.email, workspaceName: ws.name, acessoAte: new Date(fim * 1000) });
+    }
+  } catch (err) {
+    log.error({ err, wsId, subId: sub.id }, "falha ao mandar o e-mail de mudança na assinatura");
   }
 }
 
@@ -198,15 +244,24 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
           const plan   = planOf(sub);
           const status = mapStatus(sub.status);
 
+          const { data: gravada } = await supabaseAdmin
+            .from("subscriptions").select("stripe_subscription_id").eq("workspace_id", wsId).maybeSingle();
+
           await updateSubscription(wsId, {
             ...(status ? { status } : {}),
             plan,
             /* O portal novo agenda o cancelamento em cancel_at, sem marcar cancel_at_period_end */
             cancel_at_period_end: sub.cancel_at_period_end || sub.cancel_at !== null,
             stripe_price_id:      sub.items.data[0]?.price.id,
+            /* Pausa da cobrança (EQZ-07): some quando o Stripe volta a cobrar */
+            paused_until: sub.pause_collection?.resumes_at ? new Date(sub.pause_collection.resumes_at * 1000).toISOString() : null,
             ...periodEnd(sub),
           });
           if (status === "active") await updateWorkspacePlan(wsId, plan);
+          await avisarMudancaNaAssinatura(
+            wsId, sub, event.data.previous_attributes as Partial<Stripe.Subscription> | undefined,
+            gravada?.stripe_subscription_id, fastify.log,
+          );
 
           fastify.log.info({ wsId, plan, status: sub.status }, "customer.subscription.updated");
           break;

@@ -45,7 +45,7 @@ src/
     plans.ts             — PLAN_LIMITS (basic/growth/pro) + getLimits() + dailyInvites
     nfce.ts              — consultarNfce(chave) — faz scraping/consulta da SEFAZ
     stripe.ts            — cliente Stripe (apiVersion 2026-03-25.dahlia) + PRICE_IDS
-    resend.ts            — e-mails pelo Resend: assinatura confirmada (webhook), reta final do trial (resumo, último dia, fim) e os do job de limpeza (aviso, último aviso, exclusão); lança erro se o Resend recusar
+    resend.ts            — e-mails pelo Resend: assinatura confirmada, plano alterado e cancelamento agendado (webhook), reta final do trial (resumo, último dia, fim) e os do job de limpeza (aviso, último aviso, exclusão); lança erro se o Resend recusar
     emailLayout.ts       — layout dos e-mails no tema "Noite Azul" (tabelas e estilo inline) + escapeHtml; também gera os modelos do Supabase Auth
     cleanup.ts           — job diário de expiração/aviso/exclusão
   types/index.ts         — ApiResponse<T>, augment FastifyRequest (req.user)
@@ -132,10 +132,11 @@ O slug `intermediate` foi renomeado para `growth` — constraint e dados já atu
 - `profiles`          — id (= auth.uid), name, email, phone, avatar_color, cpf (unique, nullable)
 - `products`          — id, workspace_id, name, code (NOT NULL), category, unit, price, cost (custo de compra, opcional; a nota preenche), qty, min_qty, max_qty, location, supplier, image_url (foto da pessoa ou da embalagem no Open Food Facts), icon (EQZ-30: ícone escolhido à mão ou `nenhum`; null = automático pelo nome, no front), nota_fiscal, created_by, created_at, updated_at
 - `movements`         — id, product_id, delta, reason (texto livre), motivo (saída: venda/perda/vencido/furto/uso_interno/devolucao/ajuste_contagem; null na entrada), created_by, created_at
-- `subscriptions`     — id, workspace_id, plan, status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_subscription_id, stripe_price_id, created_at, updated_at, expired_at, warned_at, final_warned_at, confirmation_email_sub_id, trial_recap_sent_at / trial_last_day_sent_at / trial_ended_sent_at (EQZ-05: envio de cada e-mail do trial)
+- `subscriptions`     — id, workspace_id, plan, status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_subscription_id, stripe_price_id, created_at, updated_at, expired_at, warned_at, final_warned_at, confirmation_email_sub_id, trial_recap_sent_at / trial_last_day_sent_at / trial_ended_sent_at (EQZ-05: envio de cada e-mail do trial), paused_until / last_paused_at (EQZ-07: pausa da cobrança)
 - `nota_imports`      — notas importadas: workspace_id, chave (única por workspace), tipo, itens, imported_by, created_at
 - `trial_grants`      — trials concedidos: user_id (único), cpf_hash SHA-256 (único), workspace_id, granted_at. RLS sem policies: só a API acessa
 - `stock_counts`      — contagens do dia (workspace_id, product_id, counted_by, expected_qty, counted_qty, created_at). Membros leem; só a RPC grava
+- `cancel_feedback`   — motivo do cancelamento e o que a pessoa fez (cancelar, pausar, trocar_plano), EQZ-07. RLS sem policies
 - `invite_log`        — cada e-mail de convite enviado (workspace_id, invited_by, created_at), para o limite diário. RLS sem policies
 
 Trigger `protect_workspace_owner` (BEFORE UPDATE/DELETE em `workspace_members`): só owner promove alguém a owner ou altera/remove outro owner, e o workspace nunca fica sem owner ativo. Vale também para as escritas diretas do front; o service_role passa direto.
@@ -339,8 +340,16 @@ Price metadata: { plan: "growth", interval: "monthly" }
 GET  /billing/subscription      — estado da assinatura (qualquer membro)
 POST /billing/checkout          — cria Stripe Checkout Session (só owner)
 POST /billing/portal            — cria Customer Portal Session (só owner); { flow: "cancel" } abre direto o cancelamento
+POST /billing/cancel-feedback   — resposta da pergunta do cancelamento { motivo, detalhe?, acao } (só owner, EQZ-07)
+POST /billing/pause             — pausa a cobrança 1 mês (só owner, EQZ-07)
 POST /webhooks/stripe           — recebe eventos do Stripe
 ```
+**Cancelamento (EQZ-07, 2026-10-20):** antes de abrir o cancelamento do portal, o front faz 1 pergunta (caro, pouco_uso,
+negocio_parado, faltou_recurso, outro_sistema, outro) e mostra uma oferta: "caro" → o plano mais barato em que o uso cabe;
+"pouco uso"/"negócio parado" → pausar. A resposta vai para `cancel_feedback` (RLS sem policies; sobrevive à exclusão do
+workspace, com `workspace_id` null). A pausa usa `pause_collection: { behavior: "void", resumes_at }` do Stripe: a assinatura
+continua `active`, o acesso também, e a mensalidade que vence no período é anulada; volta 2 dias depois dela. 1 pausa por
+ano (`last_paused_at`); `paused_until` vem do webhook. `GET /billing/subscription` devolve também `pausada` e `pausa_disponivel`.
 Não existem `/billing/cancel` nem `/billing/upgrade`: cancelamento e cartão ficam no portal (em pt-BR).
 Cancelar a assinatura (fim do ciclo, dados ficam) e excluir o workspace (`DELETE /workspaces/:id`, apaga tudo e cancela na hora) são ações separadas no front (SCRUM-63).
 **Troca de plano (SCRUM-47 parte 2):** quem já assina (`active`/`past_due` com `stripe_subscription_id`) e pede outro plano
@@ -364,7 +373,7 @@ Sem isso, quem desce de plano continuaria usando o que passou do limite pagando 
 | `checkout.session.completed` | `status = active` — mais confiável para a primeira cobrança, metadata direto na session. Manda o e-mail "Assinatura confirmada" ao dono, uma vez por assinatura (`subscriptions.confirmation_email_sub_id`); falha no e-mail só vai para o log |
 | `invoice.paid` | `status = active`, atualiza `current_period_end`, atualiza `workspaces.plan` |
 | `invoice.payment_failed` | `status = past_due` (não bloqueia ainda — Stripe vai retentar) |
-| `customer.subscription.updated` | Atualiza `plan`, `status`, `cancel_at_period_end`, `stripe_price_id` |
+| `customer.subscription.updated` | Atualiza `plan`, `status`, `cancel_at_period_end`, `stripe_price_id`, `paused_until`. Pelo `previous_attributes` do evento manda "Plano alterado" (troca pelo portal) e "Cancelamento agendado" ao dono, só para a assinatura já gravada (EQZ-07) |
 | `customer.subscription.deleted` | `status = canceled` — acesso limitado a leitura |
 
 Detalhes da API `2026-03-25.dahlia` (SCRUM-46 e 47):

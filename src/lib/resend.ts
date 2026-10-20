@@ -83,6 +83,71 @@ export async function sendSubscriptionConfirmedEmail(params: {
   });
 }
 
+/** Troca de plano pelo portal (EQZ-07): de qual para qual, a mensalidade nova e o acerto do mês. */
+export async function sendPlanChangedEmail(params: {
+  to:            string;
+  workspaceName: string;
+  de:            string;
+  para:          string;
+  /** Mensalidade do plano novo, em reais */
+  preco:         number;
+  subiu:         boolean;
+}) {
+  const { to, workspaceName, de, para, preco, subiu } = params;
+  const nome = escapeHtml(workspaceName);
+
+  await send({
+    from:    FROM,
+    to,
+    subject: `Plano alterado: o workspace "${workspaceName}" agora está no ${para}`,
+    html: layoutEmail({
+      preheader: `O ${workspaceName} mudou do ${de} para o ${para}. A mensalidade agora é ${preco.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}.`,
+      titulo:    "Plano alterado",
+      destaque:  { tom: "ok", numero: "✓", texto: `${escapeHtml(de)} → ${escapeHtml(para)} no workspace ${nome}` },
+      corpo: `
+        A mudança já vale. A mensalidade agora é de ${forte(preco.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }))}.<br><br>
+        ${subiu
+          ? "A diferença proporcional deste mês foi cobrada agora, no mesmo cartão."
+          : "O valor não usado do plano anterior virou crédito e é descontado das próximas faturas."}
+        Para ver as faturas ou trocar de novo, vá em ${forte("Configurações")} no Estoquizen.`,
+      botao:  { texto: "Abrir Configurações", url: `${siteUrl()}/configuracoes` },
+      rodape: "Você recebeu este e-mail porque o plano do seu workspace mudou.",
+    }),
+  });
+}
+
+/** Cancelamento agendado (EQZ-07): até quando vale, o que acontece depois e como desfazer. */
+export async function sendCancelScheduledEmail(params: {
+  to:            string;
+  workspaceName: string;
+  /** Fim do acesso completo (fim do ciclo pago) */
+  acessoAte:     Date;
+}) {
+  const { to, workspaceName, acessoAte } = params;
+  const nome      = escapeHtml(workspaceName);
+  const guardados = new Date(acessoAte.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const dias      = Math.max(1, Math.ceil((acessoAte.getTime() - Date.now()) / (24 * 60 * 60 * 1000)));
+
+  await send({
+    from:    FROM,
+    to,
+    subject: `Cancelamento agendado: o workspace "${workspaceName}" fica ativo até ${diaMes(acessoAte)}`,
+    html: layoutEmail({
+      preheader: `O acesso completo continua até ${diaMes(acessoAte)}. Depois, os dados ficam guardados até ${diaMes(guardados)}.`,
+      titulo:    "Cancelamento agendado",
+      destaque:  { tom: "low", numero: String(dias), texto: `${dias === 1 ? "dia" : "dias"} de acesso completo no workspace ${nome} (até ${diaMes(acessoAte)})` },
+      corpo: `
+        A assinatura do ${forte(nome)} não será renovada e não há mais cobranças. Até ${forte(diaMes(acessoAte))}
+        tudo continua funcionando.<br><br>
+        Depois disso, o workspace fica bloqueado e os dados ficam guardados até ${forte(diaMes(guardados))},
+        para você assinar de novo ou exportar uma planilha. Mudou de ideia? Em
+        ${forte("Configurações → Gerenciar assinatura e pagamento")} dá para desfazer o cancelamento até ${diaMes(acessoAte)}.`,
+      botao:  { texto: "Abrir Configurações", url: `${siteUrl()}/configuracoes` },
+      rodape: "Obrigado por ter usado o Estoquizen. Se algo faltou, conte para a gente em contato@estoquizen.com.br.",
+    }),
+  });
+}
+
 /* ── E-mails da reta final do trial (EQZ-05), enviados pelo job diário ── */
 
 const DIA_MS = 24 * 60 * 60 * 1000;
