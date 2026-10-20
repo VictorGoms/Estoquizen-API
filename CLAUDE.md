@@ -57,6 +57,10 @@ database/
   seed.sql               — dados de teste (opcional)
 ```
 
+## Testes
+- `npm test` (Vitest): regras puras em `test/*.test.ts` (sanitize, chave da NF-e, planos, layout dos e-mails, schemas Zod). Ficam fora de `src/` para o `tsc` do build não compilá-los
+- CI do GitHub (`.github/workflows/ci.yml`): tipos e testes em cada push; o deploy continua no Railway
+
 ## Padrões obrigatórios
 - Toda resposta usa `{ data, error }` via `ok()` / `fail()` (nunca retornar estrutura diferente)
 - Rotas protegidas: `{ preHandler: [fastify.authenticate] }`
