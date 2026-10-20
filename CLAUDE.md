@@ -341,6 +341,9 @@ Cancelar a assinatura (fim do ciclo, dados ficam) e excluir o workspace (`DELETE
 em `/billing/checkout` não ganha uma segunda assinatura: recebe um link do portal com `subscription_update_confirm`
 (409 se já for o plano atual). O portal (modo de teste) tem "Clientes podem trocar de plano" ligado com os 3 preços atuais,
 cobrança proporcional na hora (`always_invoice`) e downgrade imediato. O modo real tem configuração separada: repetir ao virar.
+Antes de trocar (subir ou descer), `/billing/checkout` confere se o uso cabe no plano escolhido (`usoAcimaDoPlano`: produtos e
+membros ativos + convites pendentes) e responde 409 com o motivo ("Você tem 120 produtos e o Basic vai até 50: remova 70...").
+Sem isso, quem desce de plano continuaria usando o que passou do limite pagando menos (o banco só barra cadastro novo).
 
 **CRÍTICO no webhook:**
 - Rota `/webhooks/stripe` **NÃO tem** `preHandler: [fastify.authenticate]` — o Stripe não envia JWT

@@ -4,11 +4,34 @@ import { supabaseAdmin } from "../../lib/supabase.js";
 import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { requireMember } from "../../lib/membership.js";
 import { expireTrialIfDue } from "../../lib/checkSubscription.js";
+import { getLimits } from "../../lib/plans.js";
 
 const OWNER_ONLY = "Só o owner do workspace pode gerenciar a assinatura.";
 
 /* O Stripe não tem mais o objeto (apagado, ou de outra conta/área restrita) */
 const stripeMissing = (err: unknown) => (err as { code?: string } | null)?.code === "resource_missing";
+
+/**
+ * Mudar para um plano só se o uso couber nele. Sem isso, quem tem 120 produtos desceria para o
+ * Basic e seguiria usando os 120 pagando menos (o banco só barra cadastro novo). Retorna o motivo
+ * ou null. Membros contam ativos + convites pendentes, como em POST /members/invite.
+ */
+async function usoAcimaDoPlano(workspaceId: string, plan: string): Promise<string | null> {
+  const limits = getLimits(plan);
+  const [{ count: produtos }, { count: membros }] = await Promise.all([
+    supabaseAdmin.from("products").select("id", { count: "exact", head: true }).eq("workspace_id", workspaceId),
+    supabaseAdmin.from("workspace_members").select("user_id", { count: "exact", head: true })
+      .eq("workspace_id", workspaceId).in("status", ["ativo", "pendente"]),
+  ]);
+  const motivos: string[] = [];
+  if ((produtos ?? 0) > limits.products) {
+    motivos.push(`Você tem ${produtos} produtos e o ${limits.label} vai até ${limits.products}: remova ${(produtos ?? 0) - limits.products} antes de mudar.`);
+  }
+  if ((membros ?? 0) > limits.members) {
+    motivos.push(`A equipe tem ${membros} pessoas (com convites pendentes) e o ${limits.label} vai até ${limits.members}: remova ${(membros ?? 0) - limits.members} antes de mudar.`);
+  }
+  return motivos.length ? motivos.join(" ") : null;
+}
 
 const billingRoutes: FastifyPluginAsync = async (fastify) => {
   const auth = { preHandler: [fastify.authenticate] };
@@ -45,6 +68,9 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
 
     const priceId = PRICE_IDS[plan];
     if (!priceId) return reply.status(500).send(fail("Price ID não configurado para este plano"));
+
+    const acima = await usoAcimaDoPlano(workspace_id, plan);
+    if (acima) return reply.status(409).send(fail(acima));
 
     const { data: sub } = await supabaseAdmin
       .from("subscriptions")
