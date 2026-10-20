@@ -65,7 +65,7 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
 
     const { data: ws } = await supabaseAdmin
       .from("workspaces")
-      .select("plan")
+      .select("plan, name")
       .eq("id", workspace_id)
       .single();
 
@@ -127,7 +127,8 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
 
     const siteUrl = (process.env.ALLOWED_ORIGINS ?? "https://estoquizen.vercel.app").split(",")[0].trim();
     const redirectTo = `${siteUrl}/auth/callback`;
-    const metadata   = { name, workspace_id, role, from_invite: true };
+    /* workspace_name aparece no e-mail de convite ({{ .Data.workspace_name }} no modelo do Supabase) */
+    const metadata   = { name, workspace_id, workspace_name: ws?.name ?? null, role, from_invite: true };
     const emailFailed = (err: unknown, msg: string) => {
       req.log.error({ err, workspace_id }, msg);
       return reply.status(500).send(fail("Não foi possível enviar o e-mail de convite. Tente novamente em alguns minutos."));

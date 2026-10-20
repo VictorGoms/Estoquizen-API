@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="supported-color-schemes" content="dark">
+  <title>Redefinir senha</title>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&display=swap" rel="stylesheet">
+</head>
+<body style="margin:0;padding:0;background:#0b1220">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#0b1220">Crie uma senha nova para entrar no Estoquizen.</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0b1220;padding:32px 12px">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px">
+        <tr><td style="padding:0 8px 20px">
+          <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+            <td><img src="https://www.estoquizen.com.br/logo.png" width="36" height="36" alt="" style="display:block;border:0;border-radius:10px"></td>
+            <td style="padding-left:10px;color:#f4f7fc;font-size:19px;font-weight:900;font-family:Nunito,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">Estoquizen</td>
+          </tr></table>
+        </td></tr>
+        <tr><td style="background:#151f33;border-radius:28px;padding:32px 28px">
+              <h1 style="margin:0 0 12px;color:#f4f7fc;font-size:24px;font-weight:900;line-height:1.25;font-family:Nunito,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">Redefinir senha</h1>
+              <div style="color:#a9b5c9;font-size:15px;line-height:1.65;font-weight:600;font-family:Nunito,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">Recebemos um pedido para redefinir a senha da conta <strong style="color:#f4f7fc;font-weight:900">{{ .Email }}</strong>. Toque no botão para criar uma senha nova.</div>
+              <table role="presentation" cellpadding="0" cellspacing="0" style="margin:28px 0 0">
+                <tr><td style="border-radius:999px;background:#60a5fa">
+                  <a href="{{ .ConfirmationURL }}" style="display:inline-block;padding:15px 30px;border-radius:999px;background:#60a5fa;color:#0b1220;font-size:15px;font-weight:900;text-decoration:none;font-family:Nunito,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">Criar senha nova</a>
+                </td></tr>
+              </table>
+              <p style="margin:20px 0 0;color:#8592a8;font-size:12px;line-height:1.6;font-weight:600;font-family:Nunito,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+                Se o botão não abrir, copie este endereço no navegador:<br>
+                <a href="{{ .ConfirmationURL }}" style="color:#60a5fa;word-break:break-all">{{ .ConfirmationURL }}</a>
+              </p>
+        </td></tr>
+        <tr><td style="padding:20px 16px 0;color:#8592a8;font-size:12px;line-height:1.6;font-weight:600;text-align:center;font-family:Nunito,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+          Se você não pediu, ignore este e-mail: sua senha continua a mesma.<br>
+          <span style="color:#a9b5c9">Estoquizen</span> · estoque simples para pequenos negócios
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>

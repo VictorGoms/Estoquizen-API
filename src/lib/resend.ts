@@ -1,4 +1,5 @@
 import { Resend } from "resend";
+import { layoutEmail, escapeHtml, forte } from "./emailLayout.js";
 
 const resend = new Resend(process.env.RESEND_API_KEY ?? "");
 
@@ -11,6 +12,11 @@ async function send(payload: Parameters<typeof resend.emails.send>[0]) {
   if (error) throw new Error(`Resend recusou o envio: ${error.name} - ${error.message}`);
 }
 
+const siteUrl = () => (process.env.ALLOWED_ORIGINS ?? "https://www.estoquizen.com.br").split(",")[0].trim();
+
+/* Data de exclusão por extenso curto ("19/11"), no horário de Brasília */
+const diaMes = (d: Date) => d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", timeZone: "America/Sao_Paulo" });
+
 export async function sendExpirationWarningEmail(params: {
   to:           string;
   workspaceName: string;
@@ -19,53 +25,26 @@ export async function sendExpirationWarningEmail(params: {
   ultimoAviso?: boolean;
 }) {
   const { to, workspaceName, daysUntilDelete, ultimoAviso = false } = params;
-  const siteUrl = (process.env.ALLOWED_ORIGINS ?? "https://estoquizen.vercel.app").split(",")[0].trim();
+  const nome    = escapeHtml(workspaceName);
+  const quando  = diaMes(new Date(Date.now() + daysUntilDelete * 24 * 60 * 60 * 1000));
+  const faltam  = daysUntilDelete === 1 ? "Falta 1 dia" : `Faltam ${daysUntilDelete} dias`;
 
   await send({
     from:    FROM,
     to,
     subject: `${ultimoAviso ? "Último aviso: o" : "Seu"} workspace "${workspaceName}" será excluído em ${daysUntilDelete} dias`,
-    html: `
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#0f172a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f172a;padding:40px 20px">
-    <tr><td align="center">
-      <table width="100%" style="max-width:520px;background:rgba(15,23,42,0.9);border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:40px">
-        <tr><td align="center" style="padding-bottom:32px">
-          <table cellpadding="0" cellspacing="0"><tr>
-            <td style="background:linear-gradient(135deg,#2563EB,#1D4ED8);border-radius:10px;width:36px;height:36px;text-align:center;vertical-align:middle">
-              <span style="color:#fff;font-size:18px">📦</span>
-            </td>
-            <td style="padding-left:10px;color:#fff;font-size:18px;font-weight:700">Estoquizen</td>
-          </tr></table>
-        </td></tr>
-        <tr><td style="color:#F59E0B;font-size:20px;font-weight:700;text-align:center;padding-bottom:12px">
-          ⚠️ ${ultimoAviso ? "Último aviso de exclusão" : "Aviso de exclusão"}
-        </td></tr>
-        <tr><td style="color:#94a3b8;font-size:14px;text-align:center;line-height:1.7;padding-bottom:32px">
-          O workspace <strong style="color:#e2e8f0">${workspaceName}</strong> será excluído em<br>
-          <strong style="color:#F59E0B;font-size:18px">${daysUntilDelete} dias</strong><br>
-          por falta de assinatura ativa.<br><br>
-          Todos os seus produtos, movimentações e membros serão perdidos permanentemente.<br><br>
-          Para guardar uma cópia, exporte os dados em <strong style="color:#e2e8f0">Configurações → Exportar dados</strong>.
-        </td></tr>
-        <tr><td align="center" style="padding-bottom:24px">
-          <a href="${siteUrl}/dashboard"
-             style="display:inline-block;background:linear-gradient(135deg,#2563EB,#1D4ED8);color:#fff;text-decoration:none;font-size:15px;font-weight:600;padding:14px 32px;border-radius:10px">
-            Reativar assinatura →
-          </a>
-        </td></tr>
-        <tr><td style="color:#475569;font-size:12px;text-align:center;border-top:1px solid rgba(255,255,255,0.07);padding-top:24px">
-          Se você não deseja continuar, pode ignorar este email.<br>
-          Seus dados serão removidos após o prazo acima.
-        </td></tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`,
+    html: layoutEmail({
+      preheader: `${faltam} para os dados do ${workspaceName} serem excluídos. Assine de novo ou exporte antes.`,
+      titulo:    ultimoAviso ? "Último aviso antes da exclusão" : "Seus dados vão ser excluídos",
+      destaque:  { tom: ultimoAviso ? "zero" : "low", numero: String(daysUntilDelete), texto: `${faltam} para os dados serem excluídos (a partir de ${quando})` },
+      corpo: `
+        O workspace ${forte(nome)} está sem assinatura ativa. Quando o prazo acabar, os produtos,
+        as movimentações e a equipe dele serão apagados de vez.<br><br>
+        Para continuar, assine de novo. Para guardar uma cópia, exporte os dados em planilha:
+        os dois botões ficam na tela do workspace.`,
+      botao:  { texto: "Assinar de novo ou exportar", url: `${siteUrl()}/dashboard` },
+      rodape: "Se você não quer continuar, pode ignorar este e-mail: os dados serão removidos no prazo acima.",
+    }),
   });
 }
 
@@ -79,37 +58,15 @@ export async function sendWorkspaceDeletionEmail(params: {
     from:    FROM,
     to,
     subject: `Workspace "${workspaceName}" foi excluído`,
-    html: `
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#0f172a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f172a;padding:40px 20px">
-    <tr><td align="center">
-      <table width="100%" style="max-width:520px;background:rgba(15,23,42,0.9);border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:40px">
-        <tr><td align="center" style="padding-bottom:32px">
-          <table cellpadding="0" cellspacing="0"><tr>
-            <td style="background:linear-gradient(135deg,#2563EB,#1D4ED8);border-radius:10px;width:36px;height:36px;text-align:center;vertical-align:middle">
-              <span style="color:#fff;font-size:18px">📦</span>
-            </td>
-            <td style="padding-left:10px;color:#fff;font-size:18px;font-weight:700">Estoquizen</td>
-          </tr></table>
-        </td></tr>
-        <tr><td style="color:#EF4444;font-size:20px;font-weight:700;text-align:center;padding-bottom:12px">
-          Workspace excluído
-        </td></tr>
-        <tr><td style="color:#94a3b8;font-size:14px;text-align:center;line-height:1.7;padding-bottom:32px">
-          O workspace <strong style="color:#e2e8f0">${workspaceName}</strong> foi excluído<br>
-          por falta de assinatura ativa.<br><br>
-          Se isso foi um engano ou se deseja recomeçar, crie um novo workspace com um novo plano.
-        </td></tr>
-        <tr><td style="color:#475569;font-size:12px;text-align:center;border-top:1px solid rgba(255,255,255,0.07);padding-top:24px">
-          Obrigado por ter usado o Estoquizen.
-        </td></tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`,
+    html: layoutEmail({
+      preheader: `O workspace ${workspaceName} foi excluído por falta de assinatura ativa.`,
+      titulo:    "Workspace excluído",
+      corpo: `
+        O workspace ${forte(escapeHtml(workspaceName))} foi excluído por falta de assinatura ativa,
+        depois dos avisos por e-mail.<br><br>
+        Se quiser recomeçar, crie um workspace novo e escolha um plano.`,
+      botao:  { texto: "Criar workspace", url: `${siteUrl()}/select-workspace` },
+      rodape: "Obrigado por ter usado o Estoquizen.",
+    }),
   });
 }

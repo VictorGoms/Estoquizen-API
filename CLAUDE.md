@@ -45,10 +45,13 @@ src/
     plans.ts             — PLAN_LIMITS (basic/growth/pro) + getLimits() + dailyInvites
     nfce.ts              — consultarNfce(chave) — faz scraping/consulta da SEFAZ
     stripe.ts            — cliente Stripe (apiVersion 2026-03-25.dahlia) + PRICE_IDS
-    resend.ts            — e-mails do trial (lança erro se o Resend recusar)
+    resend.ts            — e-mails do job de limpeza (aviso, último aviso, exclusão; lança erro se o Resend recusar)
+    emailLayout.ts       — layout dos e-mails no tema "Noite Azul" (tabelas e estilo inline) + escapeHtml; também gera os modelos do Supabase Auth
     cleanup.ts           — job diário de expiração/aviso/exclusão
   types/index.ts         — ApiResponse<T>, augment FastifyRequest (req.user)
 supabase/migrations/     — migrações SQL (fonte da verdade do banco; aplicar pelo MCP ou SQL Editor)
+supabase/templates/       — modelos dos e-mails do Supabase Auth (confirmação, convite, senha...): colar no painel; ver o README de lá
+scripts/email-templates.ts — gera os modelos acima a partir do emailLayout.ts
 database/
   schema.sql             — schema antigo (desatualizado; ver supabase/migrations)
   seed.sql               — dados de teste (opcional)
