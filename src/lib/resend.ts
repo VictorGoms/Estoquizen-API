@@ -83,6 +83,146 @@ export async function sendSubscriptionConfirmedEmail(params: {
   });
 }
 
+/* ── E-mails da reta final do trial (EQZ-05), enviados pelo job diário ── */
+
+const DIA_MS = 24 * 60 * 60 * 1000;
+const diaBrasil = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+const qtd = (n: number, um: string, varios: string) => `${n.toLocaleString("pt-BR")} ${n === 1 ? um : varios}`;
+const reais = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
+/** "hoje", "amanhã" ou "em 24/10", pelo calendário de Brasília */
+function quando(d: Date): string {
+  const dia = diaBrasil(d);
+  if (dia === diaBrasil(new Date())) return "hoje";
+  if (dia === diaBrasil(new Date(Date.now() + DIA_MS))) return "amanhã";
+  return `em ${diaMes(d)}`;
+}
+
+export interface ResumoWorkspace {
+  produtos:      number;
+  movimentacoes: number;
+  /** Produtos zerados ou no mínimo agora */
+  alertas:       number;
+  /** Membros ativos, contando o dono */
+  equipe:        number;
+}
+
+interface TrialEmailParams {
+  to:            string;
+  workspaceName: string;
+  fimDoTeste:    Date;
+  resumo:        ResumoWorkspace;
+  planLabel:     string;
+  /** Mensalidade do plano em teste, em reais */
+  preco:         number;
+}
+
+const RODAPE_TRIAL = "Você recebeu este e-mail porque está testando o Estoquizen. Não há cobrança sem você assinar.";
+
+/** ~4 dias antes do fim: o que a pessoa já fez (ou, com o workspace vazio, como começar). */
+export async function sendTrialRecapEmail({ to, workspaceName, fimDoTeste, resumo, planLabel, preco }: TrialEmailParams) {
+  const nome  = escapeHtml(workspaceName);
+  const acaba = quando(fimDoTeste);
+  const vazio = resumo.produtos === 0;
+
+  const itens = [
+    `${forte(qtd(resumo.movimentacoes, "movimentação registrada", "movimentações registradas"))} (entradas e saídas)`,
+    resumo.alertas > 0
+      ? `${forte(qtd(resumo.alertas, "produto em alerta", "produtos em alerta"))} agora, avisados antes de acabar`
+      : "nenhum produto em alerta: o estoque está em dia",
+    ...(resumo.equipe > 1 ? [`${forte(qtd(resumo.equipe, "pessoa", "pessoas"))} na equipe`] : []),
+  ];
+
+  await send({
+    from:    FROM,
+    to,
+    subject: vazio ? `Seu teste do Estoquizen acaba ${acaba}: dá tempo de começar` : `Seu teste do Estoquizen até aqui (acaba ${acaba})`,
+    html: layoutEmail({
+      preheader: vazio
+        ? `O ${workspaceName} ainda está vazio. Importe a sua planilha e veja o estoque em poucos minutos.`
+        : `${qtd(resumo.produtos, "produto cadastrado", "produtos cadastrados")} e ${qtd(resumo.movimentacoes, "movimentação", "movimentações")} no ${workspaceName}. O teste acaba ${acaba}.`,
+      titulo:   vazio ? "Ainda dá tempo de testar de verdade" : "O que você já fez no teste",
+      destaque: vazio
+        ? { tom: "low", numero: "0", texto: `produtos cadastrados no workspace ${nome} até agora` }
+        : { tom: "ok", numero: resumo.produtos.toLocaleString("pt-BR"), texto: `${resumo.produtos === 1 ? "produto cadastrado" : "produtos cadastrados"} no workspace ${nome}` },
+      corpo: vazio ? `
+        O teste acaba ${forte(acaba)} e o ${forte(nome)} ainda não tem produtos. O jeito mais rápido de
+        começar é trazer o que você já tem: importe a planilha que usa hoje (CSV ou Excel) ou leia a
+        nota de compra do fornecedor.<br><br>
+        Em poucos minutos o estoque está lá, com alerta de mínimo e a previsão de quando cada item acaba.` : `
+        Até agora, o ${forte(nome)} tem:<br><br>
+        ${itens.map((i) => `&bull;&nbsp; ${i}`).join("<br>")}<br><br>
+        O teste acaba ${forte(acaba)}. Para continuar sem interrupção, assine o ${forte(escapeHtml(planLabel))}
+        por ${forte(reais(preco))}/mês, ou escolha outro plano em Configurações.`,
+      botao:  vazio
+        ? { texto: "Importar minha planilha", url: `${siteUrl()}/estoque/importar` }
+        : { texto: "Escolher meu plano", url: `${siteUrl()}/configuracoes` },
+      rodape: RODAPE_TRIAL,
+    }),
+  });
+}
+
+/** Último dia do teste: o que acontece depois e como continuar. */
+export async function sendTrialLastDayEmail({ to, workspaceName, fimDoTeste, resumo, planLabel, preco }: TrialEmailParams) {
+  const nome   = escapeHtml(workspaceName);
+  const acaba  = quando(fimDoTeste);
+  const dias   = Math.max(1, Math.ceil((fimDoTeste.getTime() - Date.now()) / DIA_MS));
+  const faltam = dias === 1 ? "Falta 1 dia" : `Faltam ${dias} dias`;
+
+  await send({
+    from:    FROM,
+    to,
+    subject: `Seu teste do Estoquizen acaba ${acaba}`,
+    html: layoutEmail({
+      preheader: `Assine para continuar usando o ${workspaceName} sem interrupção. Nada é apagado na hora.`,
+      titulo:    `O teste acaba ${acaba}`,
+      destaque:  { tom: "low", numero: String(dias), texto: `${faltam} de teste no workspace ${nome} (até ${diaMes(fimDoTeste)})` },
+      corpo: `
+        Depois disso, o ${forte(nome)} fica bloqueado até alguém assinar. Nada é apagado na hora:
+        os dados ficam guardados por 30 dias.<br><br>
+        ${resumo.produtos > 0 ? `Até aqui são ${forte(qtd(resumo.produtos, "produto", "produtos"))} e ${forte(qtd(resumo.movimentacoes, "movimentação", "movimentações"))}. ` : ""}Para continuar
+        de onde parou, assine o ${forte(escapeHtml(planLabel))} por ${forte(reais(preco))}/mês. Também dá para
+        escolher outro plano em Configurações.`,
+      botao:  { texto: "Assinar agora", url: `${siteUrl()}/configuracoes` },
+      rodape: RODAPE_TRIAL,
+    }),
+  });
+}
+
+/** Dia seguinte ao fim do teste: os dados estão guardados, até quando e como voltar. */
+export async function sendTrialEndedEmail(params: {
+  to:            string;
+  workspaceName: string;
+  fimDoTeste:    Date;
+  /** Até quando os dados ficam guardados (fim do teste + 30 dias) */
+  guardadoAte:   Date;
+  resumo:        ResumoWorkspace;
+}) {
+  const { to, workspaceName, fimDoTeste, guardadoAte, resumo } = params;
+  const nome = escapeHtml(workspaceName);
+  const dias = Math.max(1, Math.ceil((guardadoAte.getTime() - Date.now()) / DIA_MS));
+
+  await send({
+    from:    FROM,
+    to,
+    subject: `Seu teste acabou, e os dados do "${workspaceName}" estão guardados`,
+    html: layoutEmail({
+      preheader: `Os dados ficam guardados até ${diaMes(guardadoAte)}. Assine quando quiser e tudo volta como estava.`,
+      titulo:    "Seus dados estão guardados",
+      destaque:  { tom: "ok", numero: String(dias), texto: `dias com os dados do workspace ${nome} guardados (até ${diaMes(guardadoAte)})` },
+      corpo: `
+        O teste do ${forte(nome)} acabou em ${forte(diaMes(fimDoTeste))} e o workspace está bloqueado.
+        ${resumo.produtos > 0
+          ? `Os ${forte(qtd(resumo.produtos, "produto", "produtos"))} e o histórico de ${forte(qtd(resumo.movimentacoes, "movimentação", "movimentações"))} continuam lá, do jeito que você deixou.`
+          : "Nada foi apagado."}<br><br>
+        Assine quando quiser e tudo volta na hora. Se preferir não continuar, exporte uma planilha com
+        tudo na tela do workspace antes do prazo.`,
+      botao:  { texto: "Assinar e voltar", url: `${siteUrl()}/dashboard` },
+      rodape: "Antes de excluir qualquer coisa, mandamos mais dois avisos por e-mail.",
+    }),
+  });
+}
+
 export async function sendWorkspaceDeletionEmail(params: {
   to:           string;
   workspaceName: string;

@@ -1,5 +1,9 @@
 import { supabaseAdmin } from "./supabase.js";
-import { sendExpirationWarningEmail, sendWorkspaceDeletionEmail } from "./resend.js";
+import {
+  sendExpirationWarningEmail, sendWorkspaceDeletionEmail,
+  sendTrialRecapEmail, sendTrialLastDayEmail, sendTrialEndedEmail, type ResumoWorkspace,
+} from "./resend.js";
+import { getLimits } from "./plans.js";
 
 const EXPIRED_STATUSES  = ["trial_expired", "canceled"];
 const WARN_AFTER_DAYS   = 14;
@@ -11,14 +15,48 @@ const MIN_NOTICE_DAYS   = 3;
 const FINAL_WARN_DAYS   = DELETE_AFTER_DAYS - MIN_NOTICE_DAYS;
 const DAY_MS            = 24 * 60 * 60 * 1000;
 
+/* E-mails da reta final do trial (EQZ-05), contados pelo fim do teste (vale para 14 e 30 dias).
+   As janelas cobrem mais de um dia porque a API dorme no Railway e o job pode atrasar; a do
+   resumo termina onde começa a do último dia, para os dois não saírem juntos */
+const RECAP_FROM_DAYS    = 4;    // resumo "o que você já fez": de 4 a 1,5 dia antes do fim
+const LAST_DAY_FROM_DAYS = 1.5;  // "acaba amanhã": nas últimas 36 h
+const ENDED_MIN_DAYS     = 1;    // "seus dados estão guardados": de 1 a 3 dias depois do fim
+const ENDED_MAX_DAYS     = 3;    // (passou disso, não manda: ficaria fora de hora)
+
 /*
  * A contagem usa subscriptions.expired_at, que a trigger subscriptions_track_expiry preenche
  * quando a assinatura expira (no trial vencido, a data do fim do trial). Antes usava updated_at,
  * que muda com qualquer atualização, e o aviso saía todo dia; agora warned_at marca o envio.
  */
 
+type WorkspaceDaLinha = { id: string; name: string; created_by: string } | null;
+
+async function emailDoCriador(userId: string): Promise<string | null> {
+  const { data } = await supabaseAdmin.from("profiles").select("email").eq("id", userId).maybeSingle();
+  return data?.email ?? null;
+}
+
+/** Números do workspace para os e-mails do trial (mesma regra de alerta do /stats e do front). */
+async function resumoDoWorkspace(workspaceId: string): Promise<ResumoWorkspace> {
+  const [{ data: produtos }, { count: movimentacoes }, { count: equipe }] = await Promise.all([
+    supabaseAdmin.from("products").select("qty, min_qty").eq("workspace_id", workspaceId).limit(5000),
+    supabaseAdmin.from("movements").select("id, products!inner(workspace_id)", { count: "exact", head: true })
+      .eq("products.workspace_id", workspaceId),
+    supabaseAdmin.from("workspace_members").select("user_id", { count: "exact", head: true })
+      .eq("workspace_id", workspaceId).eq("status", "ativo"),
+  ]);
+  const lista = produtos ?? [];
+  return {
+    produtos:      lista.length,
+    movimentacoes: movimentacoes ?? 0,
+    alertas:       lista.filter((p) => Number(p.qty) <= 0 || Number(p.qty) <= Number(p.min_qty)).length,
+    equipe:        equipe ?? 1,
+  };
+}
+
 export async function runCleanup(): Promise<{
-  expired: number; deleted: number; warned: number; finalWarned: number; deleteErrors: string[]; emailErrors: string[];
+  expired: number; deleted: number; warned: number; finalWarned: number; trialEmails: number;
+  deleteErrors: string[]; emailErrors: string[];
 }> {
   const now          = new Date();
   const warnCutoff   = new Date(now.getTime() - WARN_AFTER_DAYS   * DAY_MS).toISOString();
@@ -157,5 +195,72 @@ export async function runCleanup(): Promise<{
     finalWarned++;
   }
 
-  return { expired: expired ?? 0, deleted, warned, finalWarned, deleteErrors, emailErrors };
+  /* ── 4. Reta final do trial (EQZ-05): resumo, último dia e "seus dados estão guardados" ── */
+  const emDias = (dias: number) => new Date(now.getTime() + dias * DAY_MS).toISOString();
+  let trialEmails = 0;
+
+  type Etapa = "resumo" | "último dia" | "fim";
+  const marcar = async (etapa: Etapa, workspaceId: string) => {
+    const coluna = etapa === "resumo" ? "trial_recap_sent_at" : etapa === "último dia" ? "trial_last_day_sent_at" : "trial_ended_sent_at";
+    const { error } = await supabaseAdmin.from("subscriptions").update({ [coluna]: now.toISOString() }).eq("workspace_id", workspaceId);
+    if (error) emailErrors.push(`trial (${etapa}) ${workspaceId} enviado, mas ${coluna} não gravou: ${error.message}`);
+  };
+
+  const [{ data: paraResumo }, { data: paraUltimoDia }, { data: paraFim }] = await Promise.all([
+    supabaseAdmin.from("subscriptions")
+      .select("workspace_id, plan, trial_ends_at, workspaces(id, name, created_by)")
+      .eq("status", "trialing")
+      .gt("trial_ends_at", emDias(LAST_DAY_FROM_DAYS))
+      .lte("trial_ends_at", emDias(RECAP_FROM_DAYS))
+      .is("trial_recap_sent_at", null),
+    supabaseAdmin.from("subscriptions")
+      .select("workspace_id, plan, trial_ends_at, workspaces(id, name, created_by)")
+      .eq("status", "trialing")
+      .gt("trial_ends_at", now.toISOString())
+      .lte("trial_ends_at", emDias(LAST_DAY_FROM_DAYS))
+      .is("trial_last_day_sent_at", null),
+    supabaseAdmin.from("subscriptions")
+      .select("workspace_id, plan, expired_at, workspaces(id, name, created_by)")
+      .eq("status", "trial_expired")
+      .gte("expired_at", emDias(-ENDED_MAX_DAYS))
+      .lte("expired_at", emDias(-ENDED_MIN_DAYS))
+      .is("trial_ended_sent_at", null),
+  ]);
+
+  type LinhaTrial = { workspace_id: string; plan: string | null; trial_ends_at?: string; expired_at?: string; workspaces: unknown };
+  const etapas: [Etapa, LinhaTrial[] | null][] = [["resumo", paraResumo], ["último dia", paraUltimoDia], ["fim", paraFim]];
+  for (const [etapa, linhas] of etapas) {
+    for (const row of linhas ?? []) {
+      const ws = row.workspaces as unknown as WorkspaceDaLinha;
+      if (!ws) continue;
+      const to = await emailDoCriador(ws.created_by);
+      if (!to) continue;
+
+      const resumo = await resumoDoWorkspace(ws.id);
+      const plano  = getLimits(row.plan ?? "growth");
+      try {
+        if (etapa === "fim") {
+          const fimDoTeste = new Date(row.expired_at as string);
+          await sendTrialEndedEmail({
+            to, workspaceName: ws.name, fimDoTeste, resumo,
+            guardadoAte: new Date(fimDoTeste.getTime() + DELETE_AFTER_DAYS * DAY_MS),
+          });
+        } else {
+          const params = {
+            to, workspaceName: ws.name, resumo, planLabel: plano.label, preco: plano.price,
+            fimDoTeste: new Date(row.trial_ends_at as string),
+          };
+          await (etapa === "resumo" ? sendTrialRecapEmail(params) : sendTrialLastDayEmail(params));
+        }
+      } catch (err) {
+        emailErrors.push(`trial (${etapa}) ${ws.id}: ${(err as Error).message}`);
+        continue;
+      }
+      /* Só marca depois do envio: se o Resend falhar, tenta de novo na próxima rodada */
+      await marcar(etapa, ws.id);
+      trialEmails++;
+    }
+  }
+
+  return { expired: expired ?? 0, deleted, warned, finalWarned, trialEmails, deleteErrors, emailErrors };
 }

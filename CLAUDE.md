@@ -45,7 +45,7 @@ src/
     plans.ts             — PLAN_LIMITS (basic/growth/pro) + getLimits() + dailyInvites
     nfce.ts              — consultarNfce(chave) — faz scraping/consulta da SEFAZ
     stripe.ts            — cliente Stripe (apiVersion 2026-03-25.dahlia) + PRICE_IDS
-    resend.ts            — e-mails pelo Resend: assinatura confirmada (webhook) e os do job de limpeza (aviso, último aviso, exclusão); lança erro se o Resend recusar
+    resend.ts            — e-mails pelo Resend: assinatura confirmada (webhook), reta final do trial (resumo, último dia, fim) e os do job de limpeza (aviso, último aviso, exclusão); lança erro se o Resend recusar
     emailLayout.ts       — layout dos e-mails no tema "Noite Azul" (tabelas e estilo inline) + escapeHtml; também gera os modelos do Supabase Auth
     cleanup.ts           — job diário de expiração/aviso/exclusão
   types/index.ts         — ApiResponse<T>, augment FastifyRequest (req.user)
@@ -132,7 +132,7 @@ O slug `intermediate` foi renomeado para `growth` — constraint e dados já atu
 - `profiles`          — id (= auth.uid), name, email, phone, avatar_color, cpf (unique, nullable)
 - `products`          — id, workspace_id, name, code (NOT NULL), category, unit, price, cost (custo de compra, opcional; a nota preenche), qty, min_qty, max_qty, location, supplier, image_url (foto da pessoa ou da embalagem no Open Food Facts), icon (EQZ-30: ícone escolhido à mão ou `nenhum`; null = automático pelo nome, no front), nota_fiscal, created_by, created_at, updated_at
 - `movements`         — id, product_id, delta, reason (texto livre), motivo (saída: venda/perda/vencido/furto/uso_interno/devolucao/ajuste_contagem; null na entrada), created_by, created_at
-- `subscriptions`     — id, workspace_id, plan, status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_subscription_id, stripe_price_id, created_at, updated_at, expired_at, warned_at
+- `subscriptions`     — id, workspace_id, plan, status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_subscription_id, stripe_price_id, created_at, updated_at, expired_at, warned_at, final_warned_at, confirmation_email_sub_id, trial_recap_sent_at / trial_last_day_sent_at / trial_ended_sent_at (EQZ-05: envio de cada e-mail do trial)
 - `nota_imports`      — notas importadas: workspace_id, chave (única por workspace), tipo, itens, imported_by, created_at
 - `trial_grants`      — trials concedidos: user_id (único), cpf_hash SHA-256 (único), workspace_id, granted_at. RLS sem policies: só a API acessa
 - `stock_counts`      — contagens do dia (workspace_id, product_id, counted_by, expected_qty, counted_qty, created_at). Membros leem; só a RPC grava
@@ -393,6 +393,11 @@ Detalhes da API `2026-03-25.dahlia` (SCRUM-46 e 47):
   2. expirado há 30+ dias **e com o último aviso há 3+ dias** (`final_warned_at`) → deleta workspace (cascade) + email de confirmação. Ninguém é excluído sem os dois avisos
   3. expirado há 14+ dias e `warned_at` vazio → envia o aviso **uma vez** e grava `warned_at` (antes saía todo dia entre o 14º e o 29º dia). Se o Resend falhar, tenta de novo na próxima rodada
   4. expirado há 27+ dias, primeiro aviso há 3+ dias e `final_warned_at` vazio → envia o **último aviso** ("Último aviso: ... será excluído em 3 dias") e grava `final_warned_at` (desde 2026-10-20). Se o job ficou parado, os avisos e a exclusão atrasam juntos
+  5. **Reta final do trial (EQZ-05, 2026-10-20)**, contada pelo fim do teste (vale para 14 e 30 dias), uma vez cada (colunas `trial_*_sent_at`), para o criador do workspace:
+     - **resumo** com `trial_ends_at` entre 1,5 e 4 dias à frente: produtos, movimentações, alertas e equipe, com o preço do plano; workspace vazio recebe a versão "importe a sua planilha"
+     - **último dia** nas últimas 36 h do teste: o que acontece depois (bloqueado, dados guardados 30 dias) e "Assinar agora"
+     - **fim** de 1 a 3 dias depois de `expired_at` (só `trial_expired`): até quando os dados ficam guardados, assinar ou exportar. Passou de 3 dias, não manda
+     As janelas são largas porque a API dorme no Railway; quem não abre o app depende de alguém acordar a API
 - Emails via **Resend** (`src/lib/resend.ts`) — HTTP, sem SMTP bloqueado no Railway
 - Endpoint manual `POST /admin/cleanup` (protegido por `CRON_SECRET`) para forçar execução
 
