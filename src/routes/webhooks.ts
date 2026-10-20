@@ -2,6 +2,8 @@ import type { FastifyPluginAsync } from "fastify";
 import Stripe from "stripe";
 import { stripe, PRICE_IDS } from "../lib/stripe.js";
 import { supabaseAdmin } from "../lib/supabase.js";
+import { getLimits } from "../lib/plans.js";
+import { sendSubscriptionConfirmedEmail } from "../lib/resend.js";
 
 type LocalStatus = "active" | "past_due" | "canceled";
 
@@ -31,6 +33,44 @@ function planOf(sub: Stripe.Subscription): string {
   const priceId = sub.items.data[0]?.price.id;
   const fromPrice = Object.entries(PRICE_IDS).find(([, id]) => id && id === priceId)?.[0];
   return fromPrice ?? sub.metadata?.plan ?? "basic";
+}
+
+/*
+ * E-mail "Assinatura confirmada" para o dono do workspace, uma vez por assinatura (o Stripe pode
+ * reenviar o evento). Falha no e-mail só vai para o log: não deve fazer o Stripe reenviar o evento.
+ */
+async function avisarAssinaturaConfirmada(
+  wsId: string, plan: string, subId: string, session: Stripe.Checkout.Session,
+  log: { error: (obj: object, msg: string) => void },
+) {
+  try {
+    const { data: row } = await supabaseAdmin
+      .from("subscriptions").select("confirmation_email_sub_id").eq("workspace_id", wsId).maybeSingle();
+    if (row?.confirmation_email_sub_id === subId) return;
+
+    const { data: ws } = await supabaseAdmin.from("workspaces").select("name, created_by").eq("id", wsId).maybeSingle();
+    if (!ws) return;
+    const { data: dono } = await supabaseAdmin.from("profiles").select("email").eq("id", ws.created_by).maybeSingle();
+    const to = dono?.email ?? session.customer_details?.email;
+    if (!to) return;
+
+    const sub  = await stripe.subscriptions.retrieve(subId);
+    const item = sub.items.data[0];
+    await sendSubscriptionConfirmedEmail({
+      to,
+      workspaceName:   ws.name,
+      planLabel:       getLimits(plan).label,
+      pagoHoje:        session.amount_total ?? 0,
+      mensal:          item?.price.unit_amount ?? 0,
+      proximaCobranca: item?.current_period_end ? new Date(item.current_period_end * 1000) : null,
+    });
+
+    const { error } = await supabaseAdmin
+      .from("subscriptions").update({ confirmation_email_sub_id: subId }).eq("workspace_id", wsId);
+    if (error) log.error({ err: error, wsId }, "e-mail de assinatura enviado, mas a marca não gravou");
+  } catch (err) {
+    log.error({ err, wsId, subId }, "falha ao mandar o e-mail de assinatura confirmada");
+  }
 }
 
 /* O supabase-js não lança exceção: devolve { error }. Lança aqui para o Stripe receber 500 e reenviar. */
@@ -104,6 +144,7 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
             ...(subId  ? { stripe_subscription_id: subId } : {}),
           });
           await updateWorkspacePlan(wsId, plan);
+          if (subId) await avisarAssinaturaConfirmada(wsId, plan, subId, session, fastify.log);
 
           fastify.log.info({ wsId, plan, subId }, "checkout.session.completed → assinatura ativada");
           break;

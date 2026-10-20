@@ -19,6 +19,7 @@ const COR = {
 /* Destaque no tom dos status do app: fundo e borda já misturados com o cartão (e-mail não
    garante rgba) */
 const TOM = {
+  ok:   { texto: "#34d399", fundo: "#19353f", borda: "#1e5552" },
   low:  { texto: "#fbbf24", fundo: "#313231", borda: "#5a4f2f" },
   zero: { texto: "#fb7185", fundo: "#382b3f", borda: "#714054" },
 };

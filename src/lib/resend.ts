@@ -48,6 +48,41 @@ export async function sendExpirationWarningEmail(params: {
   });
 }
 
+const brl = (centavos: number) => (centavos / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
+/** Assinatura nova paga (checkout concluído): plano, valor de hoje e a próxima cobrança. */
+export async function sendSubscriptionConfirmedEmail(params: {
+  to:            string;
+  workspaceName: string;
+  planLabel:     string;
+  /** Valor cobrado hoje, em centavos (já com crédito descontado) */
+  pagoHoje:      number;
+  /** Valor da mensalidade, em centavos */
+  mensal:        number;
+  proximaCobranca: Date | null;
+}) {
+  const { to, workspaceName, planLabel, pagoHoje, mensal, proximaCobranca } = params;
+  const nome = escapeHtml(workspaceName);
+  const data = proximaCobranca?.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+
+  await send({
+    from:    FROM,
+    to,
+    subject: `Assinatura confirmada: plano ${planLabel} no workspace "${workspaceName}"`,
+    html: layoutEmail({
+      preheader: `Plano ${planLabel} ativo no ${workspaceName}. Obrigado por assinar o Estoquizen.`,
+      titulo:    "Assinatura confirmada",
+      destaque:  { tom: "ok", numero: "✓", texto: `Plano ${escapeHtml(planLabel)} ativo no workspace ${nome}` },
+      corpo: `
+        Recebemos o pagamento de ${forte(brl(pagoHoje))}${pagoHoje < mensal ? " (com o seu crédito descontado)" : ""}.
+        ${data ? `A próxima cobrança é de ${forte(brl(mensal))} em ${forte(data)}, no mesmo cartão.` : `A mensalidade é de ${forte(brl(mensal))}.`}<br><br>
+        Para trocar de plano, atualizar o cartão ou cancelar, vá em ${forte("Configurações → Plano atual")} no Estoquizen.`,
+      botao:  { texto: "Abrir o Estoquizen", url: `${siteUrl()}/dashboard` },
+      rodape: "Você recebeu este e-mail porque assinou o Estoquizen.",
+    }),
+  });
+}
+
 export async function sendWorkspaceDeletionEmail(params: {
   to:           string;
   workspaceName: string;

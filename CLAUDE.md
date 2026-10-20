@@ -45,7 +45,7 @@ src/
     plans.ts             — PLAN_LIMITS (basic/growth/pro) + getLimits() + dailyInvites
     nfce.ts              — consultarNfce(chave) — faz scraping/consulta da SEFAZ
     stripe.ts            — cliente Stripe (apiVersion 2026-03-25.dahlia) + PRICE_IDS
-    resend.ts            — e-mails do job de limpeza (aviso, último aviso, exclusão; lança erro se o Resend recusar)
+    resend.ts            — e-mails pelo Resend: assinatura confirmada (webhook) e os do job de limpeza (aviso, último aviso, exclusão); lança erro se o Resend recusar
     emailLayout.ts       — layout dos e-mails no tema "Noite Azul" (tabelas e estilo inline) + escapeHtml; também gera os modelos do Supabase Auth
     cleanup.ts           — job diário de expiração/aviso/exclusão
   types/index.ts         — ApiResponse<T>, augment FastifyRequest (req.user)
@@ -138,6 +138,8 @@ O slug `intermediate` foi renomeado para `growth` — constraint e dados já atu
 - `invite_log`        — cada e-mail de convite enviado (workspace_id, invited_by, created_at), para o limite diário. RLS sem policies
 
 Trigger `protect_workspace_owner` (BEFORE UPDATE/DELETE em `workspace_members`): só owner promove alguém a owner ou altera/remove outro owner, e o workspace nunca fica sem owner ativo. Vale também para as escritas diretas do front; o service_role passa direto.
+
+Trigger `on_auth_user_email_changed` (AFTER UPDATE OF email em `auth.users`): copia o e-mail novo para `profiles.email` quando a pessoa confirma a troca de e-mail feita no Perfil (2026-10-20).
 
 Trigger `subscriptions_track_expiry` (BEFORE INSERT/UPDATE OF status em `subscriptions`): grava `expired_at` quando a assinatura expira e limpa `expired_at`/`warned_at` quando ela volta a valer. Base do job de limpeza.
 
@@ -358,7 +360,7 @@ Sem isso, quem desce de plano continuaria usando o que passou do limite pagando 
 ### Webhooks do Stripe a ouvir
 | Evento | Ação no backend |
 |---|---|
-| `checkout.session.completed` | `status = active` — mais confiável para a primeira cobrança, metadata direto na session |
+| `checkout.session.completed` | `status = active` — mais confiável para a primeira cobrança, metadata direto na session. Manda o e-mail "Assinatura confirmada" ao dono, uma vez por assinatura (`subscriptions.confirmation_email_sub_id`); falha no e-mail só vai para o log |
 | `invoice.paid` | `status = active`, atualiza `current_period_end`, atualiza `workspaces.plan` |
 | `invoice.payment_failed` | `status = past_due` (não bloqueia ainda — Stripe vai retentar) |
 | `customer.subscription.updated` | Atualiza `plan`, `status`, `cancel_at_period_end`, `stripe_price_id` |
