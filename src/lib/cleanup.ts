@@ -4,9 +4,11 @@ import { sendExpirationWarningEmail, sendWorkspaceDeletionEmail } from "./resend
 const EXPIRED_STATUSES  = ["trial_expired", "canceled"];
 const WARN_AFTER_DAYS   = 14;
 const DELETE_AFTER_DAYS = 30;
-/* Ninguém é excluído sem aviso: se o job ficou dias sem rodar (sleep do Railway), o aviso sai
-   primeiro e a exclusão espera pelo menos este prazo depois dele */
+/* Ninguém é excluído sem os dois avisos: o último sai MIN_NOTICE_DAYS antes da exclusão, e só
+   depois que o primeiro foi enviado há esse prazo. Se o job ficou dias sem rodar (sleep do
+   Railway), os avisos saem atrasados e a exclusão espera junto */
 const MIN_NOTICE_DAYS   = 3;
+const FINAL_WARN_DAYS   = DELETE_AFTER_DAYS - MIN_NOTICE_DAYS;
 const DAY_MS            = 24 * 60 * 60 * 1000;
 
 /*
@@ -16,12 +18,13 @@ const DAY_MS            = 24 * 60 * 60 * 1000;
  */
 
 export async function runCleanup(): Promise<{
-  expired: number; deleted: number; warned: number; deleteErrors: string[]; emailErrors: string[];
+  expired: number; deleted: number; warned: number; finalWarned: number; deleteErrors: string[]; emailErrors: string[];
 }> {
   const now          = new Date();
   const warnCutoff   = new Date(now.getTime() - WARN_AFTER_DAYS   * DAY_MS).toISOString();
   const deleteCutoff = new Date(now.getTime() - DELETE_AFTER_DAYS * DAY_MS).toISOString();
   const noticeCutoff = new Date(now.getTime() - MIN_NOTICE_DAYS   * DAY_MS).toISOString();
+  const finalCutoff  = new Date(now.getTime() - FINAL_WARN_DAYS   * DAY_MS).toISOString();
 
   /* ── 0. Transicionar trialing → trial_expired quando trial_ends_at passou ── */
   const { data: expiredRows } = await supabaseAdmin
@@ -32,13 +35,13 @@ export async function runCleanup(): Promise<{
     .select("id");
   const expired = expiredRows?.length ?? 0;
 
-  /* ── 1. Excluir workspaces expirados há 30+ dias e avisados há MIN_NOTICE_DAYS+ dias ── */
+  /* ── 1. Excluir workspaces expirados há 30+ dias e com o último aviso há MIN_NOTICE_DAYS+ dias ── */
   const { data: toDelete } = await supabaseAdmin
     .from("subscriptions")
     .select("workspace_id, workspaces(id, name, created_by)")
     .in("status", EXPIRED_STATUSES)
     .lte("expired_at", deleteCutoff)
-    .lte("warned_at", noticeCutoff);
+    .lte("final_warned_at", noticeCutoff);
 
   let deleted = 0;
   const deleteErrors: string[] = [];
@@ -116,5 +119,43 @@ export async function runCleanup(): Promise<{
     warned++;
   }
 
-  return { expired: expired ?? 0, deleted, warned, deleteErrors, emailErrors };
+  /* ── 3. Último aviso (uma vez), 3 dias antes da exclusão e pelo menos 3 dias depois do primeiro ── */
+  const { data: toFinal } = await supabaseAdmin
+    .from("subscriptions")
+    .select("workspace_id, workspaces(id, name, created_by)")
+    .in("status", EXPIRED_STATUSES)
+    .lte("expired_at", finalCutoff)
+    .lte("warned_at", noticeCutoff)
+    .is("final_warned_at", null);
+
+  let finalWarned = 0;
+
+  for (const row of toFinal ?? []) {
+    const ws = row.workspaces as unknown as { id: string; name: string; created_by: string } | null;
+    if (!ws) continue;
+
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("email")
+      .eq("id", ws.created_by)
+      .maybeSingle();
+
+    if (!profile?.email) continue;
+
+    try {
+      await sendExpirationWarningEmail({ to: profile.email, workspaceName: ws.name, daysUntilDelete: MIN_NOTICE_DAYS, ultimoAviso: true });
+    } catch (err) {
+      emailErrors.push(`último aviso ${ws.id}: ${(err as Error).message}`);
+      continue;
+    }
+
+    const { error: markErr } = await supabaseAdmin
+      .from("subscriptions")
+      .update({ final_warned_at: now.toISOString() })
+      .eq("workspace_id", ws.id);
+    if (markErr) emailErrors.push(`último aviso ${ws.id} enviado, mas final_warned_at não gravou: ${markErr.message}`);
+    finalWarned++;
+  }
+
+  return { expired: expired ?? 0, deleted, warned, finalWarned, deleteErrors, emailErrors };
 }

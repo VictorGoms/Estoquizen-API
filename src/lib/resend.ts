@@ -15,14 +15,16 @@ export async function sendExpirationWarningEmail(params: {
   to:           string;
   workspaceName: string;
   daysUntilDelete: number;
+  /* O segundo e último aviso, 3 dias antes da exclusão */
+  ultimoAviso?: boolean;
 }) {
-  const { to, workspaceName, daysUntilDelete } = params;
+  const { to, workspaceName, daysUntilDelete, ultimoAviso = false } = params;
   const siteUrl = (process.env.ALLOWED_ORIGINS ?? "https://estoquizen.vercel.app").split(",")[0].trim();
 
   await send({
     from:    FROM,
     to,
-    subject: `Seu workspace "${workspaceName}" será excluído em ${daysUntilDelete} dias`,
+    subject: `${ultimoAviso ? "Último aviso: o" : "Seu"} workspace "${workspaceName}" será excluído em ${daysUntilDelete} dias`,
     html: `
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -40,7 +42,7 @@ export async function sendExpirationWarningEmail(params: {
           </tr></table>
         </td></tr>
         <tr><td style="color:#F59E0B;font-size:20px;font-weight:700;text-align:center;padding-bottom:12px">
-          ⚠️ Aviso de exclusão
+          ⚠️ ${ultimoAviso ? "Último aviso de exclusão" : "Aviso de exclusão"}
         </td></tr>
         <tr><td style="color:#94a3b8;font-size:14px;text-align:center;line-height:1.7;padding-bottom:32px">
           O workspace <strong style="color:#e2e8f0">${workspaceName}</strong> será excluído em<br>

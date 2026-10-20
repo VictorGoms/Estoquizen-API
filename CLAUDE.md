@@ -384,8 +384,9 @@ Detalhes da API `2026-03-25.dahlia` (SCRUM-46 e 47):
 - A contagem usa `subscriptions.expired_at`, preenchido pela trigger `subscriptions_track_expiry` quando a assinatura entra em `trial_expired`/`canceled` (no trial vencido, a data do fim do trial) e limpo quando sai. Antes usava `updated_at`, que muda com qualquer atualização (SCRUM-56)
 - Fluxo em ordem:
   1. `trialing` + `trial_ends_at < now()` → atualiza para `trial_expired` (a API também faz isso na hora, em `assertActiveSubscription` e `GET /billing/subscription`)
-  2. expirado há 30+ dias **e avisado há 3+ dias** → deleta workspace (cascade) + email de confirmação. Ninguém é excluído sem aviso
+  2. expirado há 30+ dias **e com o último aviso há 3+ dias** (`final_warned_at`) → deleta workspace (cascade) + email de confirmação. Ninguém é excluído sem os dois avisos
   3. expirado há 14+ dias e `warned_at` vazio → envia o aviso **uma vez** e grava `warned_at` (antes saía todo dia entre o 14º e o 29º dia). Se o Resend falhar, tenta de novo na próxima rodada
+  4. expirado há 27+ dias, primeiro aviso há 3+ dias e `final_warned_at` vazio → envia o **último aviso** ("Último aviso: ... será excluído em 3 dias") e grava `final_warned_at` (desde 2026-10-20). Se o job ficou parado, os avisos e a exclusão atrasam juntos
 - Emails via **Resend** (`src/lib/resend.ts`) — HTTP, sem SMTP bloqueado no Railway
 - Endpoint manual `POST /admin/cleanup` (protegido por `CRON_SECRET`) para forçar execução
 
