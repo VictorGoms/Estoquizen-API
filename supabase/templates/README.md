@@ -11,7 +11,8 @@ O Supabase não lê estes arquivos: cada um é colado no painel, em
 | Magic Link | `link-convite.html` | Seu convite no Estoquizen | Convite para quem já tem conta (`signInWithOtp` para `/aceitar-convite`) |
 | Reset Password | `recuperar-senha.html` | Redefinir sua senha do Estoquizen | "Esqueci minha senha" |
 | Change Email Address | `trocar-email.html` | Confirme seu novo e-mail no Estoquizen | Troca de e-mail da conta |
+| Reauthentication | `reautenticacao.html` | Seu código de confirmação do Estoquizen | Confirmação com código antes de uma alteração sensível (o app ainda não pede) |
 
-- Variáveis do Supabase usadas: `{{ .ConfirmationURL }}`, `{{ .Email }}`, `{{ .NewEmail }}` e
+- Variáveis do Supabase usadas: `{{ .ConfirmationURL }}`, `{{ .Email }}`, `{{ .NewEmail }}`, `{{ .Token }}` e
   `{{ .Data.workspace_name }}` (a API grava o nome do workspace no metadata do convite).
 - Mudou o layout? Rode `npx tsx scripts/email-templates.ts` para gerar de novo e cole outra vez.

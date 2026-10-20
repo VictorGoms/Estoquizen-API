@@ -5,7 +5,7 @@
  * Rodar: npx tsx scripts/email-templates.ts
  */
 import { writeFileSync } from "node:fs";
-import { layoutEmail, forte } from "../src/lib/emailLayout.js";
+import { layoutEmail, forte, codigo } from "../src/lib/emailLayout.js";
 
 const modelos: Record<string, Parameters<typeof layoutEmail>[0]> = {
   "confirmar-cadastro": {
@@ -43,6 +43,13 @@ const modelos: Record<string, Parameters<typeof layoutEmail>[0]> = {
     corpo:     `Confirme a troca do e-mail da sua conta de ${forte("{{ .Email }}")} para ${forte("{{ .NewEmail }}")}.`,
     botao:     { texto: "Confirmar novo e-mail", url: "{{ .ConfirmationURL }}" },
     rodape:    "Se você não pediu essa troca, ignore este e-mail e troque sua senha.",
+  },
+  "reautenticacao": {
+    /* Só sai se o app pedir reautenticação (supabase.auth.reauthenticate); hoje não pede */
+    preheader: "Seu código para confirmar a alteração na conta do Estoquizen.",
+    titulo:    "Confirme que é você",
+    corpo:     `Use este código para confirmar a alteração na sua conta:${codigo("{{ .Token }}")}`,
+    rodape:    "Se você não pediu nenhuma alteração, ignore este e-mail e troque sua senha.",
   },
 };
 

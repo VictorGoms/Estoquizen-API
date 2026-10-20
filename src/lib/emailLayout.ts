@@ -101,5 +101,9 @@ export function layoutEmail({ preheader, titulo, corpo, destaque, botao, rodape 
 </html>`;
 }
 
+/** Código para digitar (ex.: reautenticação): grande, espaçado e fácil de copiar. */
+export const codigo = (s: string) =>
+  `<div style="margin:20px 0 4px;padding:18px 0;background:${COR.surface2};border-radius:20px;text-align:center;color:${COR.fg};font-size:32px;font-weight:900;letter-spacing:8px;font-family:${FONTE}">${s}</div>`;
+
 /** Destaca um trecho dentro do corpo (mesmo peso dos números do app). */
 export const forte = (s: string) => `<strong style="color:${COR.fg};font-weight:900">${s}</strong>`;
