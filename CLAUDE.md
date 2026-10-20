@@ -93,8 +93,8 @@ database/
 ### Workspaces — `src/routes/v1/workspaces.ts`
 - `GET  /workspaces` — workspaces do usuário autenticado (via RLS)
 - `GET  /workspaces/:id/stats` — contadores para dashboard: `{ produtos, alertas, movimentacoes }` — alerta = zerado ou `qty <= min_qty` (mesma regra do `deriveStatus` do front)
-- `POST /workspaces` — valida o CPF **antes** de criar; cria workspace, owner e subscription; desfaz tudo se um passo falhar (usa supabaseAdmin)
-- `PATCH /workspaces/:id` — atualiza workspace
+- `POST /workspaces` — aceita `segment`/`segment_other` (EQZ-13); valida o CPF **antes** de criar; cria workspace, owner e subscription; desfaz tudo se um passo falhar (usa supabaseAdmin)
+- `PATCH /workspaces/:id` — atualiza workspace (nome, descrição, `segment`, `segment_other`)
 - `DELETE /workspaces/:id` — exclui workspace (apenas owner); cascata apaga members, products e movements via FK
 
 ### Membros — `src/routes/v1/members.ts`
@@ -127,7 +127,7 @@ Planos fechados pelo João em 2026-10-17 (EQZ-27, substitui o SCRUM-57): equipe 
 O slug `intermediate` foi renomeado para `growth` — constraint e dados já atualizados no Supabase.
 
 ## Tabelas do Supabase
-- `workspaces`        — id, name, description, plan, created_by, created_at, updated_at
+- `workspaces`        — id, name, description, plan, segment (EQZ-13: mercearia/bar/buffet/roupas/pet/oficina/outro, null em quem criou antes), segment_other (texto do "Outro", até 60), created_by, created_at, updated_at
 - `workspace_members` — workspace_id, user_id, role (owner/admin/member), status (ativo/pendente), invited_by, created_at
 - `profiles`          — id (= auth.uid), name, email, phone, avatar_color, cpf (unique, nullable)
 - `products`          — id, workspace_id, name, code (NOT NULL), category, unit, price, cost (custo de compra, opcional; a nota preenche), qty, min_qty, max_qty, location, supplier, image_url (foto da pessoa ou da embalagem no Open Food Facts), icon (EQZ-30: ícone escolhido à mão ou `nenhum`; null = automático pelo nome, no front), nota_fiscal, created_by, created_at, updated_at

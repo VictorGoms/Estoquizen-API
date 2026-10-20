@@ -19,7 +19,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
 
     const { data, error } = await db
       .from("workspace_members")
-      .select("role, status, workspaces(id, name, description, plan, created_at)")
+      .select("role, status, workspaces(id, name, description, plan, segment, created_at)")
       .eq("user_id", req.user.id)
       .eq("status", "ativo");
 
