@@ -20,6 +20,8 @@ export const CreateProductSchema = z.object({
   category:     str(60).optional(),
   supplier:     z.nullable(str(200)).optional(),
   image_url:    z.nullable(z.string().url()).optional(),
+  /* EQZ-30: ícone escolhido à mão ("nenhum" = só iniciais); null volta para o automático pelo nome */
+  icon:         z.nullable(z.string().regex(/^[a-z]{2,20}$/, "Ícone inválido")).optional(),
   workspace_id: z.string().uuid("workspace_id inválido"),
 });
 
