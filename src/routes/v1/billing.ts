@@ -75,9 +75,11 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send(ok({ ...data, pausada, pausa_agendada: pausaAgendada, pausa_disponivel: pausaDisponivel }));
   });
 
-  /* POST /billing/checkout — cria Stripe Checkout Session */
+  /* POST /billing/checkout — cria Stripe Checkout Session. Com { embutido: true } o pagamento
+     aparece dentro do app (ui_mode embedded_page) e a resposta traz o client_secret; sem, devolve a
+     url da página do Stripe. Troca de plano de quem já paga continua pelo portal (url). */
   fastify.post("/billing/checkout", auth, async (req, reply) => {
-    const { workspace_id, plan } = req.body as { workspace_id?: string; plan?: string };
+    const { workspace_id, plan, embutido = false } = req.body as { workspace_id?: string; plan?: string; embutido?: boolean };
     if (!workspace_id || !plan) return reply.status(400).send(fail("workspace_id e plan são obrigatórios"));
     if (!["basic", "growth", "pro"].includes(plan)) return reply.status(400).send(fail("Plano inválido"));
 
@@ -164,17 +166,31 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
         .eq("workspace_id", workspace_id);
     }
 
-    const session = await stripe.checkout.sessions.create({
+    const comum = {
       customer:   customerId,
-      mode:       "subscription",
-      locale:     "pt-BR",
+      mode:       "subscription" as const,
+      locale:     "pt-BR" as const,
       line_items: [{ price: priceId, quantity: 1 }],
+      subscription_data: { metadata: { workspace_id, plan } },
+      metadata: { workspace_id, plan },
+    };
+
+    if (embutido) {
+      /* Cartão não precisa sair da página: o app recebe o onComplete e espera o webhook ativar.
+         O return_url só é usado por meio de pagamento que redireciona */
+      const session = await stripe.checkout.sessions.create({
+        ...comum,
+        ui_mode:                "embedded_page",
+        redirect_on_completion: "if_required",
+        return_url:             `${siteUrl}/select-workspace?checkout=success`,
+      });
+      return reply.send(ok({ client_secret: session.client_secret }));
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      ...comum,
       success_url: `${siteUrl}/select-workspace?checkout=success`,
       cancel_url:  `${siteUrl}/select-workspace?checkout=canceled`,
-      subscription_data: {
-        metadata: { workspace_id, plan },
-      },
-      metadata: { workspace_id, plan },
     });
 
     return reply.send(ok({ url: session.url }));

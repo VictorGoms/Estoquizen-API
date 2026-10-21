@@ -342,7 +342,7 @@ Price metadata: { plan: "growth", interval: "monthly" }
 ### Rotas de billing (`src/routes/v1/billing.ts`)
 ```
 GET  /billing/subscription      — estado da assinatura (qualquer membro)
-POST /billing/checkout          — cria Stripe Checkout Session (só owner)
+POST /billing/checkout          — cria Stripe Checkout Session (só owner); { embutido: true } → pagamento dentro do app (ui_mode embedded_page, redirect só se o meio de pagamento exigir) e devolve client_secret; sem, devolve a url da página do Stripe
 POST /billing/portal            — Customer Portal do Stripe (só owner): cartão, faturas e troca de plano; cancelar está desligado no portal
 POST /billing/cancel            — cancela no fim do ciclo, direto no app (só owner); desfaz uma pausa agendada
 POST /billing/uncancel          — desfaz o cancelamento agendado (só owner)
