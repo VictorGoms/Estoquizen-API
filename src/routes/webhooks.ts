@@ -183,9 +183,13 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
           const subId  = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
           const custId = typeof session.customer     === "string" ? session.customer     : session.customer?.id;
 
+          /* Assinatura nova: zera o que era da anterior (o cancelamento agendado de uma Basic antiga
+             ficava marcado na Pro nova e escondia o "Cancelar assinatura") */
           await updateSubscription(wsId, {
             status: "active",
             plan,
+            cancel_at_period_end: false,
+            paused_until:         null,
             ...(custId ? { stripe_customer_id: custId } : {}),
             ...(subId  ? { stripe_subscription_id: subId } : {}),
           });
@@ -272,7 +276,7 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
           const wsId = sub.metadata?.workspace_id;
           if (!wsId || !await isCurrentSubscription(wsId, sub.id)) break;
 
-          await updateSubscription(wsId, { status: "canceled" });
+          await updateSubscription(wsId, { status: "canceled", cancel_at_period_end: false, paused_until: null });
           fastify.log.info({ wsId, subId: sub.id }, "customer.subscription.deleted → canceled");
           break;
         }
