@@ -190,6 +190,8 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
             plan,
             cancel_at_period_end: false,
             paused_until:         null,
+            pause_starts_at:      null,
+            pause_ends_at:        null,
             ...(custId ? { stripe_customer_id: custId } : {}),
             ...(subId  ? { stripe_subscription_id: subId } : {}),
           });
@@ -276,7 +278,9 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
           const wsId = sub.metadata?.workspace_id;
           if (!wsId || !await isCurrentSubscription(wsId, sub.id)) break;
 
-          await updateSubscription(wsId, { status: "canceled", cancel_at_period_end: false, paused_until: null });
+          await updateSubscription(wsId, {
+            status: "canceled", cancel_at_period_end: false, paused_until: null, pause_starts_at: null, pause_ends_at: null,
+          });
           fastify.log.info({ wsId, subId: sub.id }, "customer.subscription.deleted → canceled");
           break;
         }

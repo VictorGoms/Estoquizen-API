@@ -136,7 +136,7 @@ O slug `intermediate` foi renomeado para `growth` — constraint e dados já atu
 - `profiles`          — id (= auth.uid), name, email, phone, avatar_color, cpf (unique, nullable)
 - `products`          — id, workspace_id, name, code (NOT NULL), category, unit, price, cost (custo de compra, opcional; a nota preenche), qty, min_qty, max_qty, location, supplier, image_url (foto da pessoa ou da embalagem no Open Food Facts), icon (EQZ-30: ícone escolhido à mão ou `nenhum`; null = automático pelo nome, no front), nota_fiscal, created_by, created_at, updated_at
 - `movements`         — id, product_id, delta, reason (texto livre), motivo (saída: venda/perda/vencido/furto/uso_interno/devolucao/ajuste_contagem; null na entrada), created_by, created_at
-- `subscriptions`     — id, workspace_id, plan, status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_subscription_id, stripe_price_id, created_at, updated_at, expired_at, warned_at, final_warned_at, confirmation_email_sub_id, trial_recap_sent_at / trial_last_day_sent_at / trial_ended_sent_at (EQZ-05: envio de cada e-mail do trial), paused_until / last_paused_at (EQZ-07: pausa da cobrança)
+- `subscriptions`     — id, workspace_id, plan, status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_subscription_id, stripe_price_id, created_at, updated_at, expired_at, warned_at, final_warned_at, confirmation_email_sub_id, trial_recap_sent_at / trial_last_day_sent_at / trial_ended_sent_at (EQZ-05: envio de cada e-mail do trial), paused_until (quando o Stripe volta a cobrar) / pause_starts_at / pause_ends_at (período bloqueado) / last_paused_at (EQZ-07: pausa)
 - `nota_imports`      — notas importadas: workspace_id, chave (única por workspace), tipo, itens, imported_by, created_at
 - `trial_grants`      — trials concedidos: user_id (único), cpf_hash SHA-256 (único), workspace_id, granted_at. RLS sem policies: só a API acessa
 - `stock_counts`      — contagens do dia (workspace_id, product_id, counted_by, expected_qty, counted_qty, created_at). Membros leem; só a RPC grava
@@ -159,7 +159,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS profiles_cpf_unique ON public.profiles (cpf) W
 - `adjust_product_qty(p_product_id, p_delta, p_motivo, p_reason, p_user_id)` — ajuste atômico de estoque + insert em movements com o motivo (EQZ-23; o autor é `auth.uid()`). SECURITY DEFINER: checa membro e `workspace_is_writable` por dentro. A versão antiga sem `p_motivo` continua (o estoque inicial do cadastro usa); como `p_motivo` não tem padrão, não há ambiguidade entre as duas
 - `accept_workspace_invite()` — chamada pelo frontend em `/set-password` após definir senha; ativa só um convite **pendente que já existe** (o papel vem do convite, nunca do user_metadata); não aceita anon
 - `import_nota_fiscal(p_workspace_id, p_chave, p_tipo, p_itens jsonb)` — importação de nota numa transação (ver `/nfe/importar`). SECURITY DEFINER: checa owner/admin e `workspace_is_writable` por dentro
-- `workspace_is_writable(ws)` — a assinatura permite escrita? (trial válido, ativo, past_due ou legado sem assinatura; só responde para membros). Usada nas policies de escrita
+- `workspace_is_writable(ws)` — a assinatura permite escrita? (trial válido, ativo, past_due ou legado sem assinatura, e fora do período de uma pausa; só responde para membros). Usada nas policies de escrita
 - `storage_workspace_writable(nome)` — a 1ª pasta do arquivo em `product-images` é um workspace do qual a pessoa é membro e que aceita escrita. Fotos de produto ficam em `<workspace_id>/...`
 - Trigger `products_plan_limit` (BEFORE INSERT em products): limite de produtos do plano no banco (`plan_product_limit`: 50/300/2000, os mesmos de `plans.ts`), vale também para a RPC de nota. Mudou o limite em `plans.ts`? Mude a função também
 - `stock_forecast(workspace_id)` — saídas dos últimos 30 dias por produto, para a previsão "dura ~X dias" do front (EQZ-16). SECURITY INVOKER (a RLS vale)
@@ -345,15 +345,22 @@ GET  /billing/subscription      — estado da assinatura (qualquer membro)
 POST /billing/checkout          — cria Stripe Checkout Session (só owner)
 POST /billing/portal            — cria Customer Portal Session (só owner); { flow: "cancel" } abre direto o cancelamento
 POST /billing/cancel-feedback   — resposta da pergunta do cancelamento { motivo, detalhe?, acao } (só owner, EQZ-07)
-POST /billing/pause             — pausa a cobrança 1 mês (só owner, EQZ-07)
+POST /billing/pause             — pausa 1 ou 2 meses { meses } (só owner, EQZ-07)
+POST /billing/resume            — desfaz a pausa agendada ou retoma a em andamento (cobra hoje) (só owner)
 POST /webhooks/stripe           — recebe eventos do Stripe
 ```
 **Cancelamento (EQZ-07, 2026-10-20):** antes de abrir o cancelamento do portal, o front faz 1 pergunta (caro, pouco_uso,
 negocio_parado, faltou_recurso, outro_sistema, outro) e mostra uma oferta: "caro" → o plano mais barato em que o uso cabe;
 "pouco uso"/"negócio parado" → pausar. A resposta vai para `cancel_feedback` (RLS sem policies; sobrevive à exclusão do
-workspace, com `workspace_id` null). A pausa usa `pause_collection: { behavior: "void", resumes_at }` do Stripe: a assinatura
-continua `active`, o acesso também, e a mensalidade que vence no período é anulada; volta 2 dias depois dela. 1 pausa por
-ano (`last_paused_at`); `paused_until` vem do webhook. `GET /billing/subscription` devolve também `pausada` e `pausa_disponivel`.
+workspace, com `workspace_id` null). **Pausa (ajuste do João em 2026-10-20):** a pessoa usa até o fim do
+mês já pago (`pause_starts_at` = fim do período); depois o workspace fica **bloqueado** por 1 ou 2 meses (`pause_ends_at`),
+sem cobrança, e volta sozinho. No Stripe é `pause_collection: { behavior: "void", resumes_at }`, com `resumes_at` 2 dias
+depois da última mensalidade pulada; a cobrança no fim da pausa devolve o acesso. O bloqueio vale no banco
+(`workspace_is_writable` recusa entre `pause_starts_at` e `pause_ends_at`), na API (`assertActiveSubscription`, regra em
+`src/lib/pausa.ts`) e na tela (variante "Assinatura pausada" do bloqueio). Uma pausa por vez (o limite de 1 por ano saiu:
+pausar não dá mais acesso de graça). `/billing/resume`: antes de começar, só tira a pausa; no meio, cobra agora
+(`billing_cycle_anchor: "now"`, `error_if_incomplete`) e libera. `GET /billing/subscription` devolve `pausada` (bloqueado agora),
+`pausa_agendada` e `pausa_disponivel`. Assinatura nova ou encerrada zera os campos de pausa e o cancelamento agendado.
 Não existem `/billing/cancel` nem `/billing/upgrade`: cancelamento e cartão ficam no portal (em pt-BR).
 Cancelar a assinatura (fim do ciclo, dados ficam) e excluir o workspace (`DELETE /workspaces/:id`, apaga tudo e cancela na hora) são ações separadas no front (SCRUM-63).
 **Troca de plano (SCRUM-47 parte 2):** quem já assina (`active`/`past_due` com `stripe_subscription_id`) e pede outro plano

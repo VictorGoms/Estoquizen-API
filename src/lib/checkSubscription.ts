@@ -1,6 +1,9 @@
 import { supabaseAdmin } from "./supabase.js";
 import { fail } from "./response.js";
 import type { FastifyReply } from "fastify";
+import { pausaEmAndamento } from "./pausa.js";
+
+export { pausaEmAndamento };
 
 const BLOCKED = ["trial_expired", "canceled", "deleted"];
 
@@ -35,7 +38,7 @@ export async function assertActiveSubscription(
 ): Promise<boolean> {
   const { data: sub } = await supabaseAdmin
     .from("subscriptions")
-    .select("status, trial_ends_at")
+    .select("status, trial_ends_at, pause_starts_at, pause_ends_at")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
 
@@ -55,6 +58,13 @@ export async function assertActiveSubscription(
     /* Bloqueia de qualquer jeito; se a gravação falhar, o job diário acerta depois */
     await expireTrialIfDue(workspaceId).catch((err) => reply.log.error({ err, workspaceId }, "falha ao expirar o trial"));
     reply.status(403).send(fail("Seu período de teste acabou. Assine um plano para voltar a criar e editar."));
+    return false;
+  }
+
+  /* Pausa (EQZ-07): entre o fim do mês pago e a volta da cobrança, o workspace fica bloqueado */
+  if (pausaEmAndamento(sub)) {
+    const volta = new Date(sub.pause_ends_at!).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+    reply.status(403).send(fail(`A assinatura está pausada até ${volta}. Retome em Configurações para voltar a usar.`));
     return false;
   }
 
