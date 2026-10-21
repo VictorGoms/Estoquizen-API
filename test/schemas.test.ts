@@ -3,6 +3,7 @@ import "../src/lib/zodPt.js";
 import { CancelFeedbackSchema } from "../src/schemas/billing.schema.js";
 import { CreateWorkspaceSchema, UpdateWorkspaceSchema, SEGMENTOS } from "../src/schemas/workspace.schema.js";
 import { ImportProductsSchema, CreateProductSchema } from "../src/schemas/product.schema.js";
+import { ShoppingItemSchema } from "../src/schemas/shopping.schema.js";
 
 const WS = "11111111-1111-4111-8111-111111111111";
 
@@ -46,5 +47,18 @@ describe("produtos", () => {
     expect(CreateProductSchema.safeParse({ ...base, icon: "queijo" }).success).toBe(true);
     expect(CreateProductSchema.safeParse({ ...base, icon: null }).success).toBe(true);
     expect(CreateProductSchema.safeParse({ ...base, icon: "Queijo!" }).success).toBe(false);
+  });
+});
+
+describe("lista de compras (itens à mão)", () => {
+  const P = "22222222-2222-4222-8222-222222222222";
+  it("aceita quantidade positiva e arredonda em 3 casas", () => {
+    const r = ShoppingItemSchema.safeParse({ workspace_id: WS, product_id: P, qty: 1.23456 });
+    expect(r.success && r.data.qty).toBe(1.235);
+  });
+  it("recusa zero, negativo e produto inválido", () => {
+    expect(ShoppingItemSchema.safeParse({ workspace_id: WS, product_id: P, qty: 0 }).success).toBe(false);
+    expect(ShoppingItemSchema.safeParse({ workspace_id: WS, product_id: P, qty: -2 }).success).toBe(false);
+    expect(ShoppingItemSchema.safeParse({ workspace_id: WS, product_id: "abc", qty: 2 }).success).toBe(false);
   });
 });

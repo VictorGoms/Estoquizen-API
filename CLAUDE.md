@@ -29,6 +29,7 @@ src/
     members.ts           — convite e gestão de membros
     nfe.ts               — consulta NFC-e por chave e importa a nota (transacional)
     billing.ts           — assinatura, checkout e portal do Stripe
+    shopping.ts          — lista de compras: itens adicionados à mão (2026-10-21)
   routes/webhooks.ts     — POST /webhooks/stripe (API dahlia)
   routes/admin/cleanup.ts — POST /admin/cleanup (CRON_SECRET)
   schemas/
@@ -94,6 +95,13 @@ database/
 - `GET  /products/:id/movements?since=<iso>&limit=<n>` — histórico de movimentações
 - `POST /products/import` — importação de planilha (EQZ-14) `{ workspace_id, itens[] }` (até 2000; o front lê o CSV/Excel e manda as colunas já mapeadas). Owner/admin, assinatura ativa, limite do plano. RPC `import_products` grava tudo numa transação; código que já existe no workspace é pulado (`{ criados, ignorados }`) e quantidade > 0 vira "Estoque inicial (planilha)"
 
+### Lista de compras — `src/routes/v1/shopping.ts` (2026-10-21)
+A lista automática (no mínimo ou acabando em 7 dias) é calculada no front. Aqui ficam os itens postos à mão, mesmo sem estar no
+mínimo, compartilhados pela equipe (qualquer membro ativo; gravar exige assinatura ativa). Um item por produto.
+- `GET    /shopping-list?workspace_id=` — itens à mão; os que tiveram **entrada** depois de serem adicionados (foram comprados) são apagados aqui mesmo
+- `POST   /shopping-list` — `{ workspace_id, product_id, qty }` adiciona ou troca a quantidade (upsert)
+- `DELETE /shopping-list/:id?workspace_id=` — tira da lista
+
 ### Workspaces — `src/routes/v1/workspaces.ts`
 - `GET  /workspaces` — workspaces do usuário autenticado (via RLS)
 - `GET  /workspaces/:id/stats` — contadores para dashboard: `{ produtos, alertas, movimentacoes }` — alerta = zerado ou `qty <= min_qty` (mesma regra do `deriveStatus` do front)
@@ -140,6 +148,7 @@ O slug `intermediate` foi renomeado para `growth` — constraint e dados já atu
 - `nota_imports`      — notas importadas: workspace_id, chave (única por workspace), tipo, itens, imported_by, created_at
 - `trial_grants`      — trials concedidos: user_id (único), cpf_hash SHA-256 (único), workspace_id, granted_at. RLS sem policies: só a API acessa
 - `stock_counts`      — contagens do dia (workspace_id, product_id, counted_by, expected_qty, counted_qty, created_at). Membros leem; só a RPC grava
+- `shopping_list_items` — lista de compras à mão: workspace_id, product_id (único por workspace), qty, added_by, created_at. Membros leem pela RLS; gravar só pela API
 - `cancel_feedback`   — motivo do cancelamento e o que a pessoa fez (cancelar, pausar, trocar_plano), EQZ-07. RLS sem policies
 - `invite_log`        — cada e-mail de convite enviado (workspace_id, invited_by, created_at), para o limite diário. RLS sem policies
 
