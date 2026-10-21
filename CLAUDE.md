@@ -45,7 +45,7 @@ src/
     plans.ts             — PLAN_LIMITS (basic/growth/pro) + getLimits() + dailyInvites
     nfce.ts              — consultarNfce(chave) — faz scraping/consulta da SEFAZ
     stripe.ts            — cliente Stripe (apiVersion 2026-03-25.dahlia) + PRICE_IDS
-    resend.ts            — e-mails pelo Resend: assinatura confirmada, plano alterado e cancelamento agendado (webhook), reta final do trial (resumo, último dia, fim) e os do job de limpeza (aviso, último aviso, exclusão); lança erro se o Resend recusar
+    resend.ts            — e-mails pelo Resend: assinatura confirmada, plano alterado e cancelamento agendado (webhook), pausa agendada (POST /billing/pause) e pausa acabando (job), reta final do trial (resumo, último dia, fim) e os do job de limpeza (aviso, último aviso, exclusão); lança erro se o Resend recusar
     emailLayout.ts       — layout dos e-mails no tema "Noite Azul" (tabelas e estilo inline) + escapeHtml; também gera os modelos do Supabase Auth
     cleanup.ts           — job diário de expiração/aviso/exclusão
   types/index.ts         — ApiResponse<T>, augment FastifyRequest (req.user)
@@ -136,7 +136,7 @@ O slug `intermediate` foi renomeado para `growth` — constraint e dados já atu
 - `profiles`          — id (= auth.uid), name, email, phone, avatar_color, cpf (unique, nullable)
 - `products`          — id, workspace_id, name, code (NOT NULL), category, unit, price, cost (custo de compra, opcional; a nota preenche), qty, min_qty, max_qty, location, supplier, image_url (foto da pessoa ou da embalagem no Open Food Facts), icon (EQZ-30: ícone escolhido à mão ou `nenhum`; null = automático pelo nome, no front), nota_fiscal, created_by, created_at, updated_at
 - `movements`         — id, product_id, delta, reason (texto livre), motivo (saída: venda/perda/vencido/furto/uso_interno/devolucao/ajuste_contagem; null na entrada), created_by, created_at
-- `subscriptions`     — id, workspace_id, plan, status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_subscription_id, stripe_price_id, created_at, updated_at, expired_at, warned_at, final_warned_at, confirmation_email_sub_id, trial_recap_sent_at / trial_last_day_sent_at / trial_ended_sent_at (EQZ-05: envio de cada e-mail do trial), paused_until (quando o Stripe volta a cobrar) / pause_starts_at / pause_ends_at (período bloqueado) / last_paused_at (EQZ-07: pausa)
+- `subscriptions`     — id, workspace_id, plan, status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_subscription_id, stripe_price_id, created_at, updated_at, expired_at, warned_at, final_warned_at, confirmation_email_sub_id, trial_recap_sent_at / trial_last_day_sent_at / trial_ended_sent_at (EQZ-05: envio de cada e-mail do trial), paused_until (quando o Stripe volta a cobrar) / pause_starts_at / pause_ends_at (período bloqueado) / last_paused_at / pause_reminder_sent_at (EQZ-07: pausa)
 - `nota_imports`      — notas importadas: workspace_id, chave (única por workspace), tipo, itens, imported_by, created_at
 - `trial_grants`      — trials concedidos: user_id (único), cpf_hash SHA-256 (único), workspace_id, granted_at. RLS sem policies: só a API acessa
 - `stock_counts`      — contagens do dia (workspace_id, product_id, counted_by, expected_qty, counted_qty, created_at). Membros leem; só a RPC grava
@@ -418,6 +418,7 @@ Detalhes da API `2026-03-25.dahlia` (SCRUM-46 e 47):
      - **último dia** nas últimas 36 h do teste: o que acontece depois (bloqueado, dados guardados 30 dias) e "Assinar agora"
      - **fim** de 1 a 3 dias depois de `expired_at` (só `trial_expired`): até quando os dados ficam guardados, assinar ou exportar. Passou de 3 dias, não manda
      As janelas são largas porque a API dorme no Railway; quem não abre o app depende de alguém acordar a API
+  6. **Pausa acabando (EQZ-07):** `pause_ends_at` entre 1 e 3 dias à frente e `pause_reminder_sent_at` vazio → avisa que a cobrança e o acesso voltam nesse dia (uma vez por pausa; pausar ou retomar zera a marca). O "Pausa agendada" sai na hora, pela rota `POST /billing/pause`
 - Emails via **Resend** (`src/lib/resend.ts`) — HTTP, sem SMTP bloqueado no Railway
 - Endpoint manual `POST /admin/cleanup` (protegido por `CRON_SECRET`) para forçar execução
 

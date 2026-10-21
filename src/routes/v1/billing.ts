@@ -7,6 +7,7 @@ import { expireTrialIfDue } from "../../lib/checkSubscription.js";
 import { pausaEmAndamento, somarMeses } from "../../lib/pausa.js";
 import { getLimits } from "../../lib/plans.js";
 import { CancelFeedbackSchema } from "../../schemas/billing.schema.js";
+import { sendPauseScheduledEmail } from "../../lib/resend.js";
 
 const OWNER_ONLY = "Só o owner do workspace pode gerenciar a assinatura.";
 
@@ -265,7 +266,7 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
 
     const { data: sub } = await supabaseAdmin
       .from("subscriptions")
-      .select("stripe_subscription_id, status, cancel_at_period_end, pause_starts_at, pause_ends_at")
+      .select("stripe_subscription_id, status, plan, cancel_at_period_end, pause_starts_at, pause_ends_at")
       .eq("workspace_id", workspace_id)
       .maybeSingle();
 
@@ -298,6 +299,7 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
         pause_starts_at: new Date(fimPago * 1000).toISOString(),
         pause_ends_at:   new Date(fimDaPausa * 1000).toISOString(),
         last_paused_at:  new Date().toISOString(),
+        pause_reminder_sent_at: null,
         updated_at:      new Date().toISOString(),
       };
       const { error } = await supabaseAdmin.from("subscriptions").update(campos).eq("workspace_id", workspace_id);
@@ -305,6 +307,23 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
         req.log.error({ err: error, workspace_id }, "pausa feita no Stripe, mas não gravou no banco");
         return reply.status(500).send(fail("A pausa foi feita, mas não deu para registrar. Fale com o suporte."));
       }
+
+      /* E-mail "Pausa agendada" para o dono; se falhar, só vai para o log (a pausa já valeu) */
+      try {
+        const { data: ws } = await supabaseAdmin.from("workspaces").select("name, created_by").eq("id", workspace_id).maybeSingle();
+        const { data: dono } = ws
+          ? await supabaseAdmin.from("profiles").select("email").eq("id", ws.created_by).maybeSingle()
+          : { data: null };
+        if (ws && dono?.email) {
+          await sendPauseScheduledEmail({
+            to: dono.email, workspaceName: ws.name, meses,
+            inicio: new Date(fimPago * 1000), fim: new Date(fimDaPausa * 1000), mensal: getLimits(sub.plan).price,
+          });
+        }
+      } catch (err) {
+        req.log.error({ err, workspace_id }, "pausa feita, mas o e-mail de pausa agendada falhou");
+      }
+
       return reply.send(ok({ pause_starts_at: campos.pause_starts_at, pause_ends_at: campos.pause_ends_at }));
     } catch (err) {
       if (stripeMissing(err)) return reply.status(409).send(fail("A assinatura não foi encontrada no Stripe."));
@@ -349,7 +368,7 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
 
     const { error } = await supabaseAdmin
       .from("subscriptions")
-      .update({ paused_until: null, pause_starts_at: null, pause_ends_at: null, updated_at: new Date().toISOString() })
+      .update({ paused_until: null, pause_starts_at: null, pause_ends_at: null, pause_reminder_sent_at: null, updated_at: new Date().toISOString() })
       .eq("workspace_id", workspace_id);
     if (error) return sendDbError(req, reply, error);
     return reply.send(ok({ retomada: true, cobrou_agora: emAndamento }));

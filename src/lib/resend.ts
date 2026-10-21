@@ -148,6 +148,72 @@ export async function sendCancelScheduledEmail(params: {
   });
 }
 
+/* ── Pausa da assinatura (EQZ-07) ── */
+
+/** Na hora de pausar: até quando usa, o período pausado, quando a cobrança volta e como desfazer. */
+export async function sendPauseScheduledEmail(params: {
+  to:            string;
+  workspaceName: string;
+  inicio:        Date;
+  fim:           Date;
+  meses:         number;
+  /** Mensalidade que volta a ser cobrada, em reais */
+  mensal:        number;
+}) {
+  const { to, workspaceName, inicio, fim, meses, mensal } = params;
+  const nome  = escapeHtml(workspaceName);
+  const valor = mensal.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
+  await send({
+    from:    FROM,
+    to,
+    subject: `Pausa agendada: o workspace "${workspaceName}" fica pausado de ${diaMes(inicio)} a ${diaMes(fim)}`,
+    html: layoutEmail({
+      preheader: `Você usa normalmente até ${diaMes(inicio)}. Nada é cobrado na pausa e os dados ficam guardados.`,
+      titulo:    "Pausa agendada",
+      destaque:  { tom: "ok", numero: String(meses), texto: `${meses === 1 ? "mês" : "meses"} de pausa no workspace ${nome}, sem cobrança (de ${diaMes(inicio)} a ${diaMes(fim)})` },
+      corpo: `
+        Até ${forte(diaMes(inicio))} tudo continua funcionando normalmente: esse período já está pago.<br><br>
+        De ${forte(diaMes(inicio))} a ${forte(diaMes(fim))} o workspace fica pausado: o app não abre para a equipe,
+        nada é cobrado e os dados ficam guardados. Em ${forte(diaMes(fim))} a mensalidade de ${forte(valor)} volta a ser
+        cobrada no mesmo cartão e o acesso volta também.<br><br>
+        Mudou de ideia? Em ${forte("Configurações")} dá para desfazer a pausa antes de ela começar, ou retomar antes durante a pausa.`,
+      botao:  { texto: "Abrir Configurações", url: `${siteUrl()}/configuracoes` },
+      rodape: "Você recebeu este e-mail porque pausou a assinatura do Estoquizen.",
+    }),
+  });
+}
+
+/** De 1 a 3 dias antes do fim da pausa: a cobrança e o acesso voltam nesse dia. */
+export async function sendPauseEndingEmail(params: {
+  to:            string;
+  workspaceName: string;
+  fim:           Date;
+  mensal:        number;
+}) {
+  const { to, workspaceName, fim, mensal } = params;
+  const nome  = escapeHtml(workspaceName);
+  const valor = mensal.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+  const dias  = Math.max(1, Math.ceil((fim.getTime() - Date.now()) / (24 * 60 * 60 * 1000)));
+
+  await send({
+    from:    FROM,
+    to,
+    subject: `Sua pausa acaba em ${diaMes(fim)}: o workspace "${workspaceName}" volta a funcionar`,
+    html: layoutEmail({
+      preheader: `Em ${diaMes(fim)} a mensalidade de ${valor} volta a ser cobrada no mesmo cartão e o acesso também.`,
+      titulo:    "A pausa está acabando",
+      destaque:  { tom: "low", numero: String(dias), texto: `${dias === 1 ? "dia" : "dias"} para o workspace ${nome} voltar (${diaMes(fim)})` },
+      corpo: `
+        Em ${forte(diaMes(fim))} a mensalidade de ${forte(valor)} é cobrada no mesmo cartão e o app volta a funcionar
+        para toda a equipe, com os dados do jeito que ficaram.<br><br>
+        Se não quiser continuar, cancele em ${forte("Configurações")} antes dessa data.`,
+      botao:  { texto: "Abrir Configurações", url: `${siteUrl()}/configuracoes` },
+      rodape: "Você recebeu este e-mail porque a assinatura do seu workspace está pausada.",
+    }),
+  });
+}
+
 /* ── E-mails da reta final do trial (EQZ-05), enviados pelo job diário ── */
 
 const DIA_MS = 24 * 60 * 60 * 1000;

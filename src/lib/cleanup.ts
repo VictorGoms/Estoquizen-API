@@ -1,7 +1,7 @@
 import { supabaseAdmin } from "./supabase.js";
 import {
   sendExpirationWarningEmail, sendWorkspaceDeletionEmail,
-  sendTrialRecapEmail, sendTrialLastDayEmail, sendTrialEndedEmail, type ResumoWorkspace,
+  sendTrialRecapEmail, sendTrialLastDayEmail, sendTrialEndedEmail, sendPauseEndingEmail, type ResumoWorkspace,
 } from "./resend.js";
 import { getLimits } from "./plans.js";
 
@@ -55,7 +55,7 @@ async function resumoDoWorkspace(workspaceId: string): Promise<ResumoWorkspace> 
 }
 
 export async function runCleanup(): Promise<{
-  expired: number; deleted: number; warned: number; finalWarned: number; trialEmails: number;
+  expired: number; deleted: number; warned: number; finalWarned: number; trialEmails: number; pauseReminders: number;
   deleteErrors: string[]; emailErrors: string[];
 }> {
   const now          = new Date();
@@ -262,5 +262,33 @@ export async function runCleanup(): Promise<{
     }
   }
 
-  return { expired: expired ?? 0, deleted, warned, finalWarned, trialEmails, deleteErrors, emailErrors };
+  /* ── 5. Pausa acabando (EQZ-07): de 1 a 3 dias antes da volta, avisa que a cobrança recomeça ── */
+  const { data: pausasAcabando } = await supabaseAdmin
+    .from("subscriptions")
+    .select("workspace_id, plan, pause_ends_at, workspaces(id, name, created_by)")
+    .in("status", ["active", "past_due"])
+    .gte("pause_ends_at", emDias(1))
+    .lte("pause_ends_at", emDias(3))
+    .is("pause_reminder_sent_at", null);
+
+  let pauseReminders = 0;
+  for (const row of pausasAcabando ?? []) {
+    const ws = row.workspaces as unknown as WorkspaceDaLinha;
+    if (!ws) continue;
+    const to = await emailDoCriador(ws.created_by);
+    if (!to) continue;
+    try {
+      await sendPauseEndingEmail({
+        to, workspaceName: ws.name, fim: new Date(row.pause_ends_at as string), mensal: getLimits((row.plan as string) ?? "basic").price,
+      });
+    } catch (err) {
+      emailErrors.push(`fim da pausa ${ws.id}: ${(err as Error).message}`);
+      continue;
+    }
+    const { error } = await supabaseAdmin.from("subscriptions").update({ pause_reminder_sent_at: now.toISOString() }).eq("workspace_id", ws.id);
+    if (error) emailErrors.push(`fim da pausa ${ws.id} enviado, mas pause_reminder_sent_at não gravou: ${error.message}`);
+    pauseReminders++;
+  }
+
+  return { expired: expired ?? 0, deleted, warned, finalWarned, trialEmails, pauseReminders, deleteErrors, emailErrors };
 }
