@@ -101,13 +101,13 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
         .is("cpf", null);
     }
 
-    /* Apenas o plano growth tem trial gratuito — basic e pro exigem pagamento imediato.
+    /* Basic e Growth têm 14 dias grátis (EQZ-12, desde 2026-10-21); o Pro exige pagamento na hora.
        1 trial por pessoa e por CPF: os índices únicos de trial_grants tornam a concessão atômica
        (antes a checagem usava um embed inexistente e todo workspace novo ganhava trial). */
     const plan = parsed.data.plan ?? "basic";
     let hasTrial = false;
 
-    if (plan === "growth" && !cpfOwner) {
+    if ((plan === "basic" || plan === "growth") && !cpfOwner) {
       const { error: grantErr } = await supabaseAdmin.from("trial_grants").insert({
         user_id:      req.user.id,
         cpf_hash:     createHash("sha256").update(cpf).digest("hex"),
@@ -131,7 +131,8 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (subErr) return rollback(subErr);
 
-    return reply.status(201).send(ok(ws));
+    /* trial: false = já usou o teste (ou o CPF é de outra conta) ou escolheu o Pro: o front abre o pagamento */
+    return reply.status(201).send(ok({ ...ws, trial: hasTrial }));
   });
 
   /* PATCH /workspaces/:id */

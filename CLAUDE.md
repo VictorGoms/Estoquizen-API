@@ -274,7 +274,7 @@ As variáveis `SMTP_*` não são mais usadas (o `mailer.ts` foi removido).
 | `pro` | Pro | R$59,90/mês | 2000 | sem limite |
 
 ### Modelo de trial
-- **Apenas o plano `growth` tem trial gratuito** — `basic` e `pro` exigem pagamento imediato
+- **`basic` e `growth` têm trial de 14 dias** (EQZ-12, desde 2026-10-21; antes só o Growth) — o `pro` exige pagamento imediato. `POST /workspaces` devolve `trial: true|false`; sem trial, o front abre o pagamento na hora
 - Trial é **1 por pessoa e 1 por CPF** — a API tenta inserir em `trial_grants` (índices únicos em user_id e no hash do CPF); se der conflito, cria sem trial. CPF de outra conta também fica sem trial
 - CPF é **obrigatório** para todos os planos e validado antes de criar o workspace; salvo em `profiles.cpf` (só na primeira vez — não sobrescreve)
 - Workspace **sem** linha em `subscriptions` criado a partir de 2026-10-01 é bloqueado por `assertActiveSubscription`; os de antes do sistema de assinaturas (ex.: "Assai Atacadista") seguem liberados
