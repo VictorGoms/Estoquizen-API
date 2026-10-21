@@ -180,33 +180,24 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send(ok({ url: session.url }));
   });
 
-  /* POST /billing/portal — Customer Portal para gerenciar assinatura.
-     Com { flow: "cancel" } abre direto a tela de cancelamento, que vale no fim do ciclo pago
-     (o portal está em at_period_end). Excluir o workspace é outra coisa: DELETE /workspaces/:id. */
+  /* POST /billing/portal — Customer Portal do Stripe para cartão, faturas e troca de plano.
+     Cancelar não passa mais por aqui (desligado no portal desde 2026-10-20): é no app, por
+     POST /billing/cancel, depois da pergunta do cancelamento. Excluir o workspace é outra coisa:
+     DELETE /workspaces/:id. */
   fastify.post("/billing/portal", auth, async (req, reply) => {
-    const { workspace_id, flow } = req.body as { workspace_id?: string; flow?: string };
+    const { workspace_id } = req.body as { workspace_id?: string };
     if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
-    if (flow !== undefined && flow !== "cancel") return reply.status(400).send(fail("flow inválido"));
 
     if (!await requireMember(workspace_id, req.user.id, reply, ["owner"], OWNER_ONLY)) return;
 
     const { data: sub } = await supabaseAdmin
       .from("subscriptions")
-      .select("stripe_customer_id, stripe_subscription_id, status, cancel_at_period_end")
+      .select("stripe_customer_id")
       .eq("workspace_id", workspace_id)
       .maybeSingle();
 
     if (!sub?.stripe_customer_id) {
       return reply.status(400).send(fail("Nenhuma assinatura ativa. Assine um plano primeiro."));
-    }
-
-    if (flow === "cancel") {
-      if (!sub.stripe_subscription_id || !["active", "past_due"].includes(sub.status)) {
-        return reply.status(400).send(fail("Não há assinatura paga para cancelar."));
-      }
-      if (sub.cancel_at_period_end) {
-        return reply.status(409).send(fail("O cancelamento já está agendado para o fim do ciclo."));
-      }
     }
 
     const siteUrl = (process.env.ALLOWED_ORIGINS ?? "https://estoquizen.vercel.app").split(",")[0].trim();
@@ -215,23 +206,97 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
       const session = await stripe.billingPortal.sessions.create({
         customer:   sub.stripe_customer_id,
         locale:     "pt-BR",
-        return_url: flow === "cancel" ? `${siteUrl}/configuracoes` : `${siteUrl}/dashboard`,
-        ...(flow === "cancel" && {
-          flow_data: {
-            type: "subscription_cancel",
-            subscription_cancel: { subscription: sub.stripe_subscription_id! },
-            after_completion: {
-              type:     "redirect",
-              redirect: { return_url: `${siteUrl}/configuracoes?assinatura=cancelada` },
-            },
-          },
-        }),
+        return_url: `${siteUrl}/configuracoes`,
       });
       return reply.send(ok({ url: session.url }));
     } catch (err) {
-      req.log.error({ err, workspace_id, flow }, "falha ao abrir o portal do Stripe");
+      req.log.error({ err, workspace_id }, "falha ao abrir o portal do Stripe");
       return reply.status(502).send(fail("Não foi possível abrir o portal de cobrança. Tente novamente."));
     }
+  });
+
+  /* POST /billing/cancel — cancela no fim do ciclo pago, direto no app (EQZ-07). A pessoa usa até
+     lá; depois o workspace fica bloqueado e os dados ficam 30 dias. Uma pausa agendada é desfeita
+     (o cancelamento vem antes dela). O e-mail "Cancelamento agendado" sai pelo webhook */
+  fastify.post("/billing/cancel", auth, async (req, reply) => {
+    const { workspace_id } = req.body as { workspace_id?: string };
+    if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
+
+    if (!await requireMember(workspace_id, req.user.id, reply, ["owner"], OWNER_ONLY)) return;
+
+    const { data: sub } = await supabaseAdmin
+      .from("subscriptions")
+      .select("stripe_subscription_id, status, cancel_at_period_end, pause_ends_at")
+      .eq("workspace_id", workspace_id)
+      .maybeSingle();
+
+    if (!sub?.stripe_subscription_id || !["active", "past_due"].includes(sub.status)) {
+      return reply.status(400).send(fail("Não há assinatura paga para cancelar."));
+    }
+    if (sub.cancel_at_period_end) {
+      return reply.status(409).send(fail("O cancelamento já está agendado para o fim do ciclo."));
+    }
+    const tinhaPausa = !!sub.pause_ends_at && new Date(sub.pause_ends_at) > new Date();
+
+    try {
+      const atualizada = await stripe.subscriptions.update(sub.stripe_subscription_id, {
+        cancel_at_period_end: true,
+        ...(tinhaPausa ? { pause_collection: "" as const } : {}),
+      });
+      const fimPago = atualizada.items.data[0]?.current_period_end;
+      const { error } = await supabaseAdmin
+        .from("subscriptions")
+        .update({
+          cancel_at_period_end: true,
+          ...(tinhaPausa ? { paused_until: null, pause_starts_at: null, pause_ends_at: null, pause_reminder_sent_at: null } : {}),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("workspace_id", workspace_id);
+      if (error) req.log.error({ err: error, workspace_id }, "cancelado no Stripe, mas não gravou no banco (o webhook acerta)");
+      return reply.send(ok({ acesso_ate: fimPago ? new Date(fimPago * 1000).toISOString() : null }));
+    } catch (err) {
+      if (stripeMissing(err)) return reply.status(409).send(fail("A assinatura não foi encontrada no Stripe."));
+      req.log.error({ err, workspace_id }, "falha ao cancelar no Stripe");
+      return reply.status(502).send(fail("Não foi possível cancelar. Tente novamente."));
+    }
+  });
+
+  /* POST /billing/uncancel — desfaz o cancelamento agendado (a assinatura segue renovando) */
+  fastify.post("/billing/uncancel", auth, async (req, reply) => {
+    const { workspace_id } = req.body as { workspace_id?: string };
+    if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
+
+    if (!await requireMember(workspace_id, req.user.id, reply, ["owner"], OWNER_ONLY)) return;
+
+    const { data: sub } = await supabaseAdmin
+      .from("subscriptions")
+      .select("stripe_subscription_id, status, cancel_at_period_end")
+      .eq("workspace_id", workspace_id)
+      .maybeSingle();
+
+    if (!sub?.stripe_subscription_id || !["active", "past_due"].includes(sub.status) || !sub.cancel_at_period_end) {
+      return reply.status(409).send(fail("Não há cancelamento agendado para desfazer."));
+    }
+
+    try {
+      /* O portal antigo agendava por cancel_at; o app, por cancel_at_period_end. O Stripe não aceita
+         os dois juntos, então desfaz o que estiver marcado */
+      const atual = await stripe.subscriptions.retrieve(sub.stripe_subscription_id);
+      await stripe.subscriptions.update(sub.stripe_subscription_id, atual.cancel_at && !atual.cancel_at_period_end
+        ? { cancel_at: "" }
+        : { cancel_at_period_end: false });
+    } catch (err) {
+      if (stripeMissing(err)) return reply.status(409).send(fail("A assinatura não foi encontrada no Stripe."));
+      req.log.error({ err, workspace_id }, "falha ao desfazer o cancelamento no Stripe");
+      return reply.status(502).send(fail("Não foi possível desfazer o cancelamento. Tente novamente."));
+    }
+
+    const { error } = await supabaseAdmin
+      .from("subscriptions")
+      .update({ cancel_at_period_end: false, updated_at: new Date().toISOString() })
+      .eq("workspace_id", workspace_id);
+    if (error) return sendDbError(req, reply, error);
+    return reply.send(ok({ desfeito: true }));
   });
 
   /* POST /billing/cancel-feedback — a resposta da única pergunta do cancelamento (EQZ-07) e o que a

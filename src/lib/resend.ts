@@ -141,7 +141,7 @@ export async function sendCancelScheduledEmail(params: {
         tudo continua funcionando.<br><br>
         Depois disso, o workspace fica bloqueado e os dados ficam guardados até ${forte(diaMes(guardados))},
         para você assinar de novo ou exportar uma planilha. Mudou de ideia? Em
-        ${forte("Configurações → Gerenciar assinatura e pagamento")} dá para desfazer o cancelamento até ${diaMes(acessoAte)}.`,
+        ${forte("Configurações")}, use ${forte("Desfazer cancelamento")} até ${diaMes(acessoAte)}.`,
       botao:  { texto: "Abrir Configurações", url: `${siteUrl()}/configuracoes` },
       rodape: "Obrigado por ter usado o Estoquizen. Se algo faltou, conte para a gente em contato@estoquizen.com.br.",
     }),

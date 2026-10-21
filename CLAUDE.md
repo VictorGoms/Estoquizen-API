@@ -343,13 +343,15 @@ Price metadata: { plan: "growth", interval: "monthly" }
 ```
 GET  /billing/subscription      — estado da assinatura (qualquer membro)
 POST /billing/checkout          — cria Stripe Checkout Session (só owner)
-POST /billing/portal            — cria Customer Portal Session (só owner); { flow: "cancel" } abre direto o cancelamento
+POST /billing/portal            — Customer Portal do Stripe (só owner): cartão, faturas e troca de plano; cancelar está desligado no portal
+POST /billing/cancel            — cancela no fim do ciclo, direto no app (só owner); desfaz uma pausa agendada
+POST /billing/uncancel          — desfaz o cancelamento agendado (só owner)
 POST /billing/cancel-feedback   — resposta da pergunta do cancelamento { motivo, detalhe?, acao } (só owner, EQZ-07)
 POST /billing/pause             — pausa 1 ou 2 meses { meses } (só owner, EQZ-07)
 POST /billing/resume            — desfaz a pausa agendada ou retoma a em andamento (cobra hoje) (só owner)
 POST /webhooks/stripe           — recebe eventos do Stripe
 ```
-**Cancelamento (EQZ-07, 2026-10-20):** antes de abrir o cancelamento do portal, o front faz 1 pergunta (caro, pouco_uso,
+**Cancelamento (EQZ-07, 2026-10-20), 100% no app desde 2026-10-21:** o front faz 1 pergunta (caro, pouco_uso,
 negocio_parado, faltou_recurso, outro_sistema, outro) e mostra uma oferta: "caro" → o plano mais barato em que o uso cabe;
 "pouco uso"/"negócio parado" → pausar. A resposta vai para `cancel_feedback` (RLS sem policies; sobrevive à exclusão do
 workspace, com `workspace_id` null). **Pausa (ajuste do João em 2026-10-20):** a pessoa usa até o fim do
@@ -361,7 +363,11 @@ depois da última mensalidade pulada; a cobrança no fim da pausa devolve o aces
 pausar não dá mais acesso de graça). `/billing/resume`: antes de começar, só tira a pausa; no meio, cobra agora
 (`billing_cycle_anchor: "now"`, `error_if_incomplete`) e libera. `GET /billing/subscription` devolve `pausada` (bloqueado agora),
 `pausa_agendada` e `pausa_disponivel`. Assinatura nova ou encerrada zera os campos de pausa e o cancelamento agendado.
-Não existem `/billing/cancel` nem `/billing/upgrade`: cancelamento e cartão ficam no portal (em pt-BR).
+Depois da pergunta e da confirmação, `POST /billing/cancel` agenda o cancelamento (`cancel_at_period_end`) e o webhook manda o
+e-mail "Cancelamento agendado"; `POST /billing/uncancel` desfaz (se o portal antigo agendou por `cancel_at`, desfaz esse campo).
+O cancelamento foi **desligado no portal do Stripe** (configuração `bpc_1TOWPmExaBJWRM4TGEnk8OLJ`, modo de teste) para ninguém
+pular a pergunta; o portal fica para cartão, faturas e troca de plano. **No modo real, repetir: desligar "Cancelar" no portal.**
+Não existe `/billing/upgrade`: a troca de plano é pelo `/billing/checkout` (ver abaixo).
 Cancelar a assinatura (fim do ciclo, dados ficam) e excluir o workspace (`DELETE /workspaces/:id`, apaga tudo e cancela na hora) são ações separadas no front (SCRUM-63).
 **Troca de plano (SCRUM-47 parte 2):** quem já assina (`active`/`past_due` com `stripe_subscription_id`) e pede outro plano
 em `/billing/checkout` não ganha uma segunda assinatura: recebe um link do portal com `subscription_update_confirm`
