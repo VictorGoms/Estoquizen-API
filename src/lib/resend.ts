@@ -1,5 +1,5 @@
 import { Resend } from "resend";
-import { layoutEmail, escapeHtml, forte } from "./emailLayout.js";
+import { layoutEmail, escapeHtml, forte, link } from "./emailLayout.js";
 
 const resend = new Resend(process.env.RESEND_API_KEY ?? "");
 
@@ -13,6 +13,8 @@ async function send(payload: Parameters<typeof resend.emails.send>[0]) {
 }
 
 const siteUrl = () => (process.env.ALLOWED_ORIGINS ?? "https://www.estoquizen.com.br").split(",")[0].trim();
+/* Contato com os clientes (o mesmo dos Termos e da Política); recebe pelo ImprovMX */
+const CONTATO = "contato@estoquizen.com.br";
 
 /* Data de exclusão por extenso curto ("19/11"), no horário de Brasília */
 const diaMes = (d: Date) => d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", timeZone: "America/Sao_Paulo" });
@@ -76,7 +78,10 @@ export async function sendSubscriptionConfirmedEmail(params: {
       corpo: `
         Recebemos o pagamento de ${forte(brl(pagoHoje))}${pagoHoje < mensal ? " (com o seu crédito descontado)" : ""}.
         ${data ? `A próxima cobrança é de ${forte(brl(mensal))} em ${forte(data)}, no mesmo cartão.` : `A mensalidade é de ${forte(brl(mensal))}.`}<br><br>
-        Para trocar de plano, atualizar o cartão ou cancelar, vá em ${forte("Configurações → Plano atual")} no Estoquizen.`,
+        Para trocar de plano, atualizar o cartão ou cancelar, vá em ${forte("Configurações → Plano atual")} no Estoquizen.<br><br>
+        ${forte("Mudou de ideia?")} Você pode desistir em até 7 dias a partir deste pagamento e receber o valor de volta:
+        escreva para ${link(CONTATO, `mailto:${CONTATO}`)}. Depois desse prazo, o cancelamento vale no fim do mês pago, sem reembolso
+        proporcional. As regras completas estão nos ${link("Termos de Uso", `${siteUrl()}/termos`)}; guarde este e-mail como comprovante.`,
       botao:  { texto: "Abrir o Estoquizen", url: `${siteUrl()}/dashboard` },
       rodape: "Você recebeu este e-mail porque assinou o Estoquizen.",
     }),
@@ -143,7 +148,7 @@ export async function sendCancelScheduledEmail(params: {
         para você assinar de novo ou exportar uma planilha. Mudou de ideia? Em
         ${forte("Configurações")}, use ${forte("Desfazer cancelamento")} até ${diaMes(acessoAte)}.`,
       botao:  { texto: "Abrir Configurações", url: `${siteUrl()}/configuracoes` },
-      rodape: "Obrigado por ter usado o Estoquizen. Se algo faltou, conte para a gente em contato@estoquizen.com.br.",
+      rodape: `Obrigado por ter usado o Estoquizen. Se algo faltou, conte para a gente em ${CONTATO}.`,
     }),
   });
 }

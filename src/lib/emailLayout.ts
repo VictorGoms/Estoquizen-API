@@ -108,3 +108,7 @@ export const codigo = (s: string) =>
 
 /** Destaca um trecho dentro do corpo (mesmo peso dos números do app). */
 export const forte = (s: string) => `<strong style="color:${COR.fg};font-weight:900">${s}</strong>`;
+
+/** Link dentro do corpo, na cor de destaque (o texto e o endereço já devem vir seguros). */
+export const link = (texto: string, url: string) =>
+  `<a href="${url}" style="color:${COR.accent};font-weight:800;text-decoration:underline">${texto}</a>`;
