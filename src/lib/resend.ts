@@ -52,9 +52,7 @@ export async function sendExpirationWarningEmail(params: {
 
 const brl = (centavos: number) => (centavos / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
-/** Assinatura nova paga (checkout concluído): plano, valor de hoje e a próxima cobrança. */
-export async function sendSubscriptionConfirmedEmail(params: {
-  to:            string;
+interface AssinaturaConfirmadaParams {
   workspaceName: string;
   planLabel:     string;
   /** Valor cobrado hoje, em centavos (já com crédito descontado) */
@@ -62,14 +60,20 @@ export async function sendSubscriptionConfirmedEmail(params: {
   /** Valor da mensalidade, em centavos */
   mensal:        number;
   proximaCobranca: Date | null;
-}) {
-  const { to, workspaceName, planLabel, pagoHoje, mensal, proximaCobranca } = params;
+}
+
+/** Assinatura nova paga (checkout concluído): plano, valor de hoje e a próxima cobrança. */
+export async function sendSubscriptionConfirmedEmail(params: AssinaturaConfirmadaParams & { to: string }) {
+  await send({ from: FROM, to: params.to, ...emailAssinaturaConfirmada(params) });
+}
+
+/* Assunto e HTML, separados do envio para o teste conferir o texto exigido pelo Decreto 7.962
+   (art. 4º, III e IV: confirmação com o contrato e a desistência em 7 dias) */
+export function emailAssinaturaConfirmada({ workspaceName, planLabel, pagoHoje, mensal, proximaCobranca }: AssinaturaConfirmadaParams) {
   const nome = escapeHtml(workspaceName);
   const data = proximaCobranca?.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
 
-  await send({
-    from:    FROM,
-    to,
+  return {
     subject: `Assinatura confirmada: plano ${planLabel} no workspace "${workspaceName}"`,
     html: layoutEmail({
       preheader: `Plano ${planLabel} ativo no ${workspaceName}. Obrigado por assinar o Estoquizen.`,
@@ -85,7 +89,7 @@ export async function sendSubscriptionConfirmedEmail(params: {
       botao:  { texto: "Abrir o Estoquizen", url: `${siteUrl()}/dashboard` },
       rodape: "Você recebeu este e-mail porque assinou o Estoquizen.",
     }),
-  });
+  };
 }
 
 /** Troca de plano pelo portal (EQZ-07): de qual para qual, a mensalidade nova e o acerto do mês. */
