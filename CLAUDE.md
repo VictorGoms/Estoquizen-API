@@ -274,17 +274,14 @@ As variáveis `SMTP_*` não são mais usadas (o `mailer.ts` foi removido).
 | `pro` | Pro | R$59,90/mês | 2000 | sem limite |
 
 ### Modelo de trial
-- **`basic` e `growth` têm trial de 14 dias** (EQZ-12, desde 2026-10-21; antes só o Growth) — o `pro` exige pagamento imediato. `POST /workspaces` devolve `trial: true|false`; sem trial, o front abre o pagamento na hora
+- **Todos os planos têm teste grátis de 30 dias** (`DIAS_TESTE` em `src/lib/trial.ts`; oferta de lançamento decidida pelo João em 2026-10-21 para quem começar até 30/11/2026, Pro incluído para verem o histórico por funcionário). Antes: Basic e Growth com 14 dias e Pro pago na hora. Em 01/12 o João decide se volta para 14 (mudar a constante aqui e `src/lib/teste.ts` no front). `POST /workspaces` devolve `trial: true|false`; sem trial (já usou), o front abre o pagamento na hora
 - Trial é **1 por pessoa e 1 por CPF** — a API tenta inserir em `trial_grants` (índices únicos em user_id e no hash do CPF); se der conflito, cria sem trial. CPF de outra conta também fica sem trial
 - CPF é **obrigatório** para todos os planos e validado antes de criar o workspace; salvo em `profiles.cpf` (só na primeira vez — não sobrescreve)
 - Workspace **sem** linha em `subscriptions` criado a partir de 2026-10-01 é bloqueado por `assertActiveSubscription`; os de antes do sistema de assinaturas (ex.: "Assai Atacadista") seguem liberados
 - O Stripe **não é criado durante o trial** — a assinatura é puramente local no banco
 - O Stripe só entra quando o usuário decide pagar
 
-**Duração do trial:**
-- Workspaces criados até **2026-06-30**: 30 dias (early users)
-- Workspaces criados após **2026-06-30**: 14 dias
-- Lógica: `const trialDays = workspace.created_at < new Date("2026-06-30") ? 30 : 14`
+**Duração do trial:** `DIAS_TESTE` (30 hoje) a partir da criação do workspace, em `fimDoTeste()` de `src/lib/trial.ts`. A regra antiga (30 dias até 2026-06-30, 14 depois) saiu.
 
 ### Timeline após expiração do trial
 ```

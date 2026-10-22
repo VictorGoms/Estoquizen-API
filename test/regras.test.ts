@@ -3,6 +3,7 @@ import { sanitizeText, sanitizeCode, sanitizeCpf, sanitizeEmail } from "../src/l
 import { chaveValida, gtinValido, codigoDoItem, cnpjRaizDaChave } from "../src/lib/nfeChave.js";
 import { getLimits, PLAN_LIMITS } from "../src/lib/plans.js";
 import { escapeHtml, layoutEmail } from "../src/lib/emailLayout.js";
+import { DIAS_TESTE, fimDoTeste } from "../src/lib/trial.js";
 
 describe("sanitize", () => {
   it("texto: tira tags, null bytes e espaço sobrando, e corta no limite", () => {
@@ -65,5 +66,13 @@ describe("layout dos e-mails", () => {
     for (const t of ["Título do e-mail", "Corpo", "Abrir", "https://www.estoquizen.com.br/dashboard", "Rodapé", "#fbbf24"]) {
       expect(html).toContain(t);
     }
+  });
+});
+
+describe("teste grátis (oferta de lançamento de 2026-10-21)", () => {
+  it("dura 30 dias em todos os planos", () => {
+    expect(DIAS_TESTE).toBe(30);
+    const inicio = new Date("2026-10-21T12:00:00Z");
+    expect(fimDoTeste(inicio).toISOString()).toBe("2026-11-20T12:00:00.000Z");
   });
 });

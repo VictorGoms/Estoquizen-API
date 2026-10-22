@@ -6,6 +6,7 @@ import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { assertActiveSubscription } from "../../lib/checkSubscription.js";
 import { sanitizeCpf } from "../../lib/sanitize.js";
 import { stripe } from "../../lib/stripe.js";
+import { fimDoTeste } from "../../lib/trial.js";
 
 const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
   const auth       = { preHandler: [fastify.authenticate] };
@@ -101,13 +102,13 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
         .is("cpf", null);
     }
 
-    /* Basic e Growth têm 14 dias grátis (EQZ-12, desde 2026-10-21); o Pro exige pagamento na hora.
-       1 trial por pessoa e por CPF: os índices únicos de trial_grants tornam a concessão atômica
-       (antes a checagem usava um embed inexistente e todo workspace novo ganhava trial). */
+    /* Todos os planos têm teste grátis (DIAS_TESTE em lib/trial.ts; oferta de lançamento de 2026-10-21,
+       antes o Pro pagava na hora). 1 trial por pessoa e por CPF: os índices únicos de trial_grants
+       tornam a concessão atômica (antes a checagem usava um embed inexistente e todo workspace novo ganhava trial). */
     const plan = parsed.data.plan ?? "basic";
     let hasTrial = false;
 
-    if ((plan === "basic" || plan === "growth") && !cpfOwner) {
+    if (!cpfOwner) {
       const { error: grantErr } = await supabaseAdmin.from("trial_grants").insert({
         user_id:      req.user.id,
         cpf_hash:     createHash("sha256").update(cpf).digest("hex"),
@@ -117,10 +118,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
       else if (grantErr.code !== "23505") req.log.error({ err: grantErr }, "falha ao registrar trial");
     }
 
-    const trialDays   = new Date(ws.created_at) < new Date("2026-06-30") ? 30 : 14;
-    const trialEndsAt = hasTrial
-      ? new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toISOString()
-      : null;
+    const trialEndsAt = hasTrial ? fimDoTeste().toISOString() : null;
 
     const { error: subErr } = await supabaseAdmin.from("subscriptions").insert({
       workspace_id:  ws.id,
@@ -131,7 +129,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (subErr) return rollback(subErr);
 
-    /* trial: false = já usou o teste (ou o CPF é de outra conta) ou escolheu o Pro: o front abre o pagamento */
+    /* trial: false = já usou o teste (ou o CPF é de outra conta): o front abre o pagamento */
     return reply.status(201).send(ok({ ...ws, trial: hasTrial }));
   });
 
