@@ -12,6 +12,7 @@ describe("e-mail Assinatura confirmada (EQZ-52, Decreto 7.962, art. 4º, III e I
     });
     expect(subject).toContain("Assinatura confirmada");
     expect(html).toContain("até 7 dias");
+    expect(html).toContain("Desistir e receber o valor de volta"); // o caminho no app (EQZ-50)
     expect(html).toContain("mailto:contato@estoquizen.com.br");
     expect(html).toMatch(/href="https?:\/\/[^"]+\/termos"/);
     expect(html).toMatch(/R\$\s39,90/);   // o pt-BR põe espaço não separável depois do R$

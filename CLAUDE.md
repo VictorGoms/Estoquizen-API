@@ -366,6 +366,8 @@ POST /billing/uncancel          — desfaz o cancelamento agendado (só owner)
 POST /billing/cancel-feedback   — resposta da pergunta do cancelamento { motivo, detalhe?, acao } (só owner, EQZ-07)
 POST /billing/pause             — pausa 1 ou 2 meses { meses } (só owner, EQZ-07)
 POST /billing/resume            — desfaz a pausa agendada ou retoma a em andamento (cobra hoje) (só owner)
+GET  /billing/desistencia       — dá para desistir com o valor de volta? { disponivel, ate, valor (centavos) } (só owner, EQZ-50)
+POST /billing/desistir          — desistência em até 7 dias do 1º pagamento: devolve tudo e cancela na hora (só owner, EQZ-50)
 POST /webhooks/stripe           — recebe eventos do Stripe
 ```
 **Cancelamento (EQZ-07, 2026-10-20), 100% no app desde 2026-10-21:** o front faz 1 pergunta (caro, pouco_uso,
@@ -385,6 +387,7 @@ e-mail "Cancelamento agendado"; `POST /billing/uncancel` desfaz (se o portal ant
 O cancelamento foi **desligado no portal do Stripe** (configuração `bpc_1TOWPmExaBJWRM4TGEnk8OLJ`, modo de teste) para ninguém
 pular a pergunta; o portal fica para cartão, faturas e troca de plano. **No modo real, repetir: desligar "Cancelar" no portal.**
 Não existe `/billing/upgrade`: a troca de plano é pelo `/billing/checkout` (ver abaixo).
+**Desistência em 7 dias (EQZ-50, 2026-10-23; CDC art. 49 e Decreto 7.962, art. 5º):** prazo contado do 1º pagamento **da assinatura** (`prazoDaDesistencia` em `src/lib/desistencia.ts`; assinatura nova tem prazo novo, como dizem os Termos). `POST /billing/desistir` lista as faturas pagas da assinatura, devolve cada pagamento (`invoicePayments.list` → `refunds.create` pelo PaymentIntent; `charge_already_refunded` conta como devolvido, então repetir é seguro), cancela na hora (`subscriptions.cancel`, sem acerto) e grava `canceled` (o webhook grava o mesmo depois). E-mail "Desistência confirmada" ao dono. **Boleto não tem estorno no Stripe:** o que não puder ser devolvido vai para `sendManualRefundEmail` (contato@) e o cliente é avisado de que a devolução é combinada por Pix. Não pede motivo (o decreto quer meio simples). Na tela: `components/configuracoes/Desistencia.tsx` do front, só no prazo.
 Cancelar a assinatura (fim do ciclo, dados ficam) e excluir o workspace (`DELETE /workspaces/:id`, apaga tudo e cancela na hora) são ações separadas no front (SCRUM-63).
 **Troca de plano (SCRUM-47 parte 2):** quem já assina (`active`/`past_due` com `stripe_subscription_id`) e pede outro plano
 em `/billing/checkout` não ganha uma segunda assinatura: recebe um link do portal com `subscription_update_confirm`

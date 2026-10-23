@@ -7,7 +7,8 @@ import { expireTrialIfDue } from "../../lib/checkSubscription.js";
 import { pausaEmAndamento, somarMeses } from "../../lib/pausa.js";
 import { getLimits } from "../../lib/plans.js";
 import { CancelFeedbackSchema } from "../../schemas/billing.schema.js";
-import { sendPauseScheduledEmail } from "../../lib/resend.js";
+import { sendPauseScheduledEmail, sendWithdrawalEmail, sendManualRefundEmail } from "../../lib/resend.js";
+import { prazoDaDesistencia, totalPago, type FaturaPaga } from "../../lib/desistencia.js";
 
 const OWNER_ONLY = "Só o owner do workspace pode gerenciar a assinatura.";
 
@@ -19,6 +20,16 @@ const PAUSA_FOLGA_S = 2 * 24 * 60 * 60;
 
 /* O Stripe não tem mais o objeto (apagado, ou de outra conta/área restrita) */
 const stripeMissing = (err: unknown) => (err as { code?: string } | null)?.code === "resource_missing";
+
+/* Faturas pagas (com valor) da assinatura, para a desistência (EQZ-50) */
+async function faturasPagas(subscriptionId: string): Promise<FaturaPaga[]> {
+  const lista = await stripe.invoices.list({ subscription: subscriptionId, status: "paid", limit: 100 });
+  return lista.data
+    .filter((f) => f.amount_paid > 0 && f.status_transitions.paid_at)
+    .map((f) => ({ id: f.id, valor: f.amount_paid, pagaEm: f.status_transitions.paid_at! }));
+}
+
+const dataBR = (ms: number) => new Date(ms).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
 
 /**
  * Mudar para um plano só se o uso couber nele. Sem isso, quem tem 120 produtos desceria para o
@@ -313,6 +324,142 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
       .eq("workspace_id", workspace_id);
     if (error) return sendDbError(req, reply, error);
     return reply.send(ok({ desfeito: true }));
+  });
+
+  /* GET /billing/desistencia?workspace_id=xxx — dá para desistir com o valor de volta (EQZ-50)?
+     Até quando (7 dias do 1º pagamento da assinatura) e quanto volta, em centavos */
+  fastify.get("/billing/desistencia", auth, async (req, reply) => {
+    const { workspace_id } = req.query as { workspace_id?: string };
+    if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
+
+    if (!await requireMember(workspace_id, req.user.id, reply, ["owner"], OWNER_ONLY)) return;
+
+    const { data: sub } = await supabaseAdmin
+      .from("subscriptions")
+      .select("stripe_subscription_id, status")
+      .eq("workspace_id", workspace_id)
+      .maybeSingle();
+
+    const nada = { disponivel: false, ate: null, valor: 0 };
+    if (!sub?.stripe_subscription_id || !["active", "past_due"].includes(sub.status)) return reply.send(ok(nada));
+
+    try {
+      const faturas = await faturasPagas(sub.stripe_subscription_id);
+      const prazo   = prazoDaDesistencia(faturas);
+      if (!prazo || Date.now() > prazo) return reply.send(ok(nada));
+      return reply.send(ok({ disponivel: true, ate: new Date(prazo).toISOString(), valor: totalPago(faturas) }));
+    } catch (err) {
+      if (stripeMissing(err)) return reply.send(ok(nada));
+      req.log.error({ err, workspace_id }, "falha ao ler as faturas para a desistência");
+      return reply.status(502).send(fail("Não foi possível consultar o prazo de desistência."));
+    }
+  });
+
+  /* POST /billing/desistir — desistência em até 7 dias do 1º pagamento (EQZ-50): devolve tudo o que a
+     assinatura pagou e cancela na hora. O workspace fica bloqueado e os dados ficam 30 dias, como num
+     cancelamento. Repetir é seguro: pagamento já devolvido é pulado. O que o Stripe não devolve
+     (boleto não tem estorno) fica para devolver à mão, com aviso ao contato@ */
+  fastify.post("/billing/desistir", auth, async (req, reply) => {
+    const { workspace_id } = req.body as { workspace_id?: string };
+    if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
+
+    if (!await requireMember(workspace_id, req.user.id, reply, ["owner"], OWNER_ONLY)) return;
+
+    const { data: sub } = await supabaseAdmin
+      .from("subscriptions")
+      .select("stripe_subscription_id, status")
+      .eq("workspace_id", workspace_id)
+      .maybeSingle();
+
+    if (!sub?.stripe_subscription_id || !["active", "past_due"].includes(sub.status)) {
+      return reply.status(400).send(fail("Não há assinatura paga para desistir."));
+    }
+
+    let faturas: FaturaPaga[];
+    try {
+      faturas = await faturasPagas(sub.stripe_subscription_id);
+    } catch (err) {
+      if (stripeMissing(err)) return reply.status(409).send(fail("A assinatura não foi encontrada no Stripe."));
+      req.log.error({ err, workspace_id }, "falha ao ler as faturas para a desistência");
+      return reply.status(502).send(fail("Não foi possível desistir agora. Tente novamente."));
+    }
+    const prazo = prazoDaDesistencia(faturas);
+    if (!prazo) return reply.status(409).send(fail("Esta assinatura ainda não teve pagamento para devolver."));
+    if (Date.now() > prazo) {
+      return reply.status(409).send(fail(`O prazo de 7 dias para desistir acabou em ${dataBR(prazo)}. Você ainda pode cancelar: o acesso vai até o fim do mês pago.`));
+    }
+
+    /* 1) Devolve cada pagamento das faturas. Sem PaymentIntent ou recusado pelo Stripe: à mão */
+    let devolvido = 0;
+    const manuais: { fatura: string; valor: number; motivo: string }[] = [];
+    try {
+      for (const f of faturas) {
+        const pagamentos = await stripe.invoicePayments.list({ invoice: f.id, status: "paid" });
+        for (const p of pagamentos.data) {
+          const pi    = p.payment.payment_intent;
+          const piId  = typeof pi === "string" ? pi : pi?.id;
+          const valor = p.amount_paid ?? 0;
+          if (!piId) { manuais.push({ fatura: f.id, valor, motivo: `pagamento do tipo ${p.payment.type}` }); continue; }
+          try {
+            const estorno = await stripe.refunds.create({
+              payment_intent: piId,
+              reason:         "requested_by_customer",
+              metadata:       { workspace_id, motivo: "desistencia_7_dias" },
+            });
+            devolvido += estorno.amount;
+          } catch (err) {
+            /* Já devolvido (pedido repetido): conta como devolvido */
+            if ((err as { code?: string }).code === "charge_already_refunded") { devolvido += valor; continue; }
+            manuais.push({ fatura: f.id, valor, motivo: (err as Error).message });
+          }
+        }
+      }
+    } catch (err) {
+      req.log.error({ err, workspace_id, devolvido }, "falha ao devolver os pagamentos da desistência");
+      return reply.status(502).send(fail("Não foi possível concluir a devolução. Tente novamente: o que já foi devolvido não é cobrado de novo."));
+    }
+
+    /* 2) Cancela na hora, sem fatura de acerto */
+    try {
+      await stripe.subscriptions.cancel(sub.stripe_subscription_id, {
+        prorate: false,
+        cancellation_details: { comment: "Desistência em 7 dias (CDC art. 49), pelo app" },
+      });
+    } catch (err) {
+      if (!stripeMissing(err)) {
+        req.log.error({ err, workspace_id, devolvido }, "devolveu, mas não cancelou a assinatura no Stripe");
+        return reply.status(502).send(fail("O valor foi devolvido, mas não deu para encerrar a assinatura. Tente de novo em instantes."));
+      }
+    }
+
+    /* 3) Bloqueia já (o webhook customer.subscription.deleted grava o mesmo depois) */
+    const { error } = await supabaseAdmin
+      .from("subscriptions")
+      .update({
+        status: "canceled", cancel_at_period_end: false,
+        paused_until: null, pause_starts_at: null, pause_ends_at: null, pause_reminder_sent_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("workspace_id", workspace_id);
+    if (error) req.log.error({ err: error, workspace_id }, "desistência feita no Stripe, mas não gravou no banco (o webhook acerta)");
+
+    /* 4) E-mails: confirmação ao dono (o decreto pede confirmação imediata) e, se faltou devolver
+       algo, aviso ao contato@. Falha no e-mail só vai para o log: a desistência já valeu */
+    const manual = manuais.reduce((soma, m) => soma + m.valor, 0);
+    try {
+      const { data: ws } = await supabaseAdmin.from("workspaces").select("name, created_by").eq("id", workspace_id).maybeSingle();
+      const { data: dono } = ws
+        ? await supabaseAdmin.from("profiles").select("email").eq("id", ws.created_by).maybeSingle()
+        : { data: null };
+      if (ws && dono?.email) await sendWithdrawalEmail({ to: dono.email, workspaceName: ws.name, devolvido, manual });
+      if (manuais.length) {
+        await sendManualRefundEmail({ workspaceId: workspace_id, workspaceName: ws?.name ?? workspace_id, donoEmail: dono?.email ?? null, manuais });
+      }
+    } catch (err) {
+      req.log.error({ err, workspace_id, manuais }, "desistência feita, mas um e-mail falhou");
+    }
+
+    return reply.send(ok({ devolvido, manual }));
   });
 
   /* POST /billing/cancel-feedback — a resposta da única pergunta do cancelamento (EQZ-07) e o que a

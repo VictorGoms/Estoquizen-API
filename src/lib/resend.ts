@@ -84,7 +84,8 @@ export function emailAssinaturaConfirmada({ workspaceName, planLabel, pagoHoje, 
         ${data ? `A próxima cobrança é de ${forte(brl(mensal))} em ${forte(data)}, no mesmo cartão.` : `A mensalidade é de ${forte(brl(mensal))}.`}<br><br>
         Para trocar de plano, atualizar o cartão ou cancelar, vá em ${forte("Configurações → Plano atual")} no Estoquizen.<br><br>
         ${forte("Mudou de ideia?")} Você pode desistir em até 7 dias a partir deste pagamento e receber o valor de volta:
-        escreva para ${link(CONTATO, `mailto:${CONTATO}`)}. Depois desse prazo, o cancelamento vale no fim do mês pago, sem reembolso
+        em ${forte("Configurações → Plano atual")}, use ${forte("Desistir e receber o valor de volta")} (ou escreva para
+        ${link(CONTATO, `mailto:${CONTATO}`)}). Depois desse prazo, o cancelamento vale no fim do mês pago, sem reembolso
         proporcional. As regras completas estão nos ${link("Termos de Uso", `${siteUrl()}/termos`)}; guarde este e-mail como comprovante.`,
       botao:  { texto: "Abrir o Estoquizen", url: `${siteUrl()}/dashboard` },
       rodape: "Você recebeu este e-mail porque assinou o Estoquizen.",
@@ -153,6 +154,75 @@ export async function sendCancelScheduledEmail(params: {
         ${forte("Configurações")}, use ${forte("Desfazer cancelamento")} até ${diaMes(acessoAte)}.`,
       botao:  { texto: "Abrir Configurações", url: `${siteUrl()}/configuracoes` },
       rodape: `Obrigado por ter usado o Estoquizen. Se algo faltou, conte para a gente em ${CONTATO}.`,
+    }),
+  });
+}
+
+/* ── Desistência em 7 dias (EQZ-50) ── */
+
+interface DesistenciaParams {
+  workspaceName: string;
+  /** Devolvido no cartão pelo Stripe, em centavos */
+  devolvido:     number;
+  /** Pago de um jeito sem estorno automático (boleto), a devolver à mão, em centavos */
+  manual:        number;
+}
+
+/** Desistência feita no app: quanto volta, quando aparece no cartão e o que acontece com os dados. */
+export async function sendWithdrawalEmail(params: DesistenciaParams & { to: string }) {
+  await send({ from: FROM, to: params.to, ...emailDesistencia(params) });
+}
+
+/* Assunto e HTML separados do envio para o teste (Decreto 7.962, art. 5º, § 4º: confirmar na hora
+   que a desistência foi recebida) */
+export function emailDesistencia({ workspaceName, devolvido, manual }: DesistenciaParams) {
+  const nome      = escapeHtml(workspaceName);
+  const guardados = diaMes(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
+
+  return {
+    subject: `Desistência confirmada: a assinatura do workspace "${workspaceName}" foi cancelada`,
+    html: layoutEmail({
+      preheader: `Recebemos a sua desistência. ${brl(devolvido + manual)} volta para você.`,
+      titulo:    "Desistência confirmada",
+      destaque:  { tom: "ok", numero: "✓", texto: `${brl(devolvido + manual)} de volta` },
+      corpo: `
+        Recebemos a sua desistência e a assinatura do ${forte(nome)} já foi cancelada: não há mais cobranças.<br><br>
+        ${devolvido ? `Devolvemos ${forte(brl(devolvido))} no mesmo cartão. O estorno aparece em 5 a 10 dias úteis, dependendo do banco (às vezes só na fatura seguinte).<br><br>` : ""}
+        ${manual ? `${forte(brl(manual))} foram pagos de um jeito que não tem estorno automático (como o boleto). Vamos escrever para este e-mail em até 1 dia útil para combinar a devolução por Pix ou transferência.<br><br>` : ""}
+        O workspace fica bloqueado a partir de agora e os dados ficam guardados até ${forte(guardados)}: dá para exportar
+        uma planilha ou assinar de novo em ${forte("Configurações")}. Depois disso, eles são excluídos.`,
+      botao:  { texto: "Abrir Configurações", url: `${siteUrl()}/configuracoes` },
+      rodape: `Guarde este e-mail como comprovante. Dúvidas: ${CONTATO}.`,
+    }),
+  };
+}
+
+/** Aviso interno: uma desistência teve pagamento que o Stripe não devolve (ex.: boleto). Devolver à mão. */
+export async function sendManualRefundEmail(params: {
+  workspaceId:   string;
+  workspaceName: string;
+  donoEmail:     string | null;
+  manuais:       { fatura: string; valor: number; motivo: string }[];
+}) {
+  const { workspaceId, workspaceName, donoEmail, manuais } = params;
+  const total = manuais.reduce((soma, m) => soma + m.valor, 0);
+  const lista = manuais.map((m) => `${forte(escapeHtml(m.fatura))}: ${brl(m.valor)} (${escapeHtml(m.motivo)})`).join("<br>");
+  await send({
+    from:    FROM,
+    to:      CONTATO,
+    subject: `[Estoquizen] Desistência: devolver ${brl(total)} à mão`,
+    html: layoutEmail({
+      preheader: `O workspace ${workspaceName} desistiu e ${brl(total)} não teve estorno automático.`,
+      titulo:    "Devolução manual pendente",
+      destaque:  { tom: "zero", numero: "!", texto: `${brl(total)} para devolver` },
+      corpo: `
+        O workspace ${forte(escapeHtml(workspaceName))} (${escapeHtml(workspaceId)}) desistiu da assinatura no prazo de
+        7 dias. A assinatura já foi cancelada, mas estes pagamentos não puderam ser devolvidos pelo Stripe:<br><br>
+        ${lista}<br><br>
+        Combine a devolução por Pix ou transferência com
+        ${donoEmail ? link(escapeHtml(donoEmail), `mailto:${escapeHtml(donoEmail)}`) : "o dono do workspace"}.
+        O cliente foi avisado de que vamos escrever em até 1 dia útil.`,
+      rodape: "Aviso interno do Estoquizen para a equipe.",
     }),
   });
 }
