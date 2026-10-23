@@ -7,6 +7,7 @@ import { assertActiveSubscription } from "../../lib/checkSubscription.js";
 import { sanitizeCpf } from "../../lib/sanitize.js";
 import { stripe } from "../../lib/stripe.js";
 import { fimDoTeste } from "../../lib/trial.js";
+import { apagarFotosDoWorkspace } from "../../lib/fotos.js";
 
 const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
   const auth       = { preHandler: [fastify.authenticate] };
@@ -212,6 +213,9 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
       .eq("id", id);
 
     if (deleteErr) return sendDbError(req, reply, deleteErr);
+
+    /* 4. Fotos dos produtos (Storage, fora do cascade). Se falhar, o job diário apaga as órfãs */
+    await apagarFotosDoWorkspace(id).catch((err) => req.log.error({ err, workspace_id: id }, "workspace excluído, mas as fotos ficaram"));
 
     return reply.send(ok({ deleted: true }));
   });

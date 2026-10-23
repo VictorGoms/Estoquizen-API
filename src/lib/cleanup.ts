@@ -4,6 +4,7 @@ import {
   sendTrialRecapEmail, sendTrialLastDayEmail, sendTrialEndedEmail, sendPauseEndingEmail, type ResumoWorkspace,
 } from "./resend.js";
 import { getLimits } from "./plans.js";
+import { apagarFotosDoWorkspace, apagarFotosOrfas } from "./fotos.js";
 
 const EXPIRED_STATUSES  = ["trial_expired", "canceled"];
 const WARN_AFTER_DAYS   = 14;
@@ -56,7 +57,7 @@ async function resumoDoWorkspace(workspaceId: string): Promise<ResumoWorkspace> 
 
 export async function runCleanup(): Promise<{
   expired: number; deleted: number; warned: number; finalWarned: number; trialEmails: number; pauseReminders: number;
-  deleteErrors: string[]; emailErrors: string[];
+  fotosOrfas: number; deleteErrors: string[]; emailErrors: string[];
 }> {
   const now          = new Date();
   const warnCutoff   = new Date(now.getTime() - WARN_AFTER_DAYS   * DAY_MS).toISOString();
@@ -106,6 +107,10 @@ export async function runCleanup(): Promise<{
     }
 
     deleted++;
+
+    /* As fotos ficam no Storage, fora do cascade do banco. Se falhar, a varredura de órfãs do fim
+       desta rodada (ou da próxima) apaga */
+    await apagarFotosDoWorkspace(ws.id).catch((err) => deleteErrors.push(`fotos ${ws.id}: ${(err as Error).message}`));
 
     if (profile?.email) {
       try {
@@ -290,5 +295,13 @@ export async function runCleanup(): Promise<{
     pauseReminders++;
   }
 
-  return { expired: expired ?? 0, deleted, warned, finalWarned, trialEmails, pauseReminders, deleteErrors, emailErrors };
+  /* ── 6. Fotos de workspaces que não existem mais (exclusões antigas ou falha no passo 1) ── */
+  let fotosOrfas = 0;
+  try {
+    fotosOrfas = (await apagarFotosOrfas()).fotos;
+  } catch (err) {
+    deleteErrors.push(`fotos órfãs: ${(err as Error).message}`);
+  }
+
+  return { expired: expired ?? 0, deleted, warned, finalWarned, trialEmails, pauseReminders, fotosOrfas, deleteErrors, emailErrors };
 }
