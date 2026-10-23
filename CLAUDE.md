@@ -103,6 +103,9 @@ mínimo, compartilhados pela equipe (qualquer membro ativo; gravar exige assinat
 - `POST   /shopping-list` — `{ workspace_id, product_id, qty }` adiciona ou troca a quantidade (upsert)
 - `DELETE /shopping-list/:id?workspace_id=` — tira da lista
 
+### Catálogo de códigos de barras — `src/routes/v1/catalogo.ts` (EQZ-53, 2026-10-23)
+- `GET /catalogo/:codigo` — nome sugerido para um GTIN quando as bases abertas (Open Food Facts e irmãs, consultadas pelo front) não conhecem: `{ nome, fonte: "nota" | "empresas" }` ou `null`. Lê `products` e `nota_imports.itens` de todos os workspaces, mas só devolve o nome. Regra em `src/lib/catalogo.ts` (pedido do João: nome de teste não pode vazar): vale o nome de **nota fiscal** (descrição do fornecedor; a revisão da nota não deixa editar) ou o nome **digitado igual por 2 donos diferentes** (sem maiúscula/acento/espaço). Nunca preço, quantidade, fornecedor ou empresa. Termos (seção 8) e Política (seção 3) avisam
+
 ### Workspaces — `src/routes/v1/workspaces.ts`
 - `GET  /workspaces` — workspaces do usuário autenticado (via RLS)
 - `GET  /workspaces/:id/stats` — contadores para dashboard: `{ produtos, alertas, movimentacoes }` — alerta = zerado ou `qty <= min_qty` (mesma regra do `deriveStatus` do front)
