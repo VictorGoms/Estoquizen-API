@@ -195,42 +195,106 @@ function decodificar(bytes: Uint8Array, contentType: string | null): string {
   }
 }
 
+/* Uma resposta do portal, venha direto ou pela ponte */
+interface Salto {
+  status:      number;
+  location:    string | null;
+  setCookies:  string[];
+  contentType: string | null;
+  bytes:       Uint8Array;
+}
+
+/* Pedido direto, do servidor (EUA) */
+async function saltoDireto(url: URL, cookie: string): Promise<Salto> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers:  { ...FETCH_HEADERS, ...(cookie ? { Cookie: cookie } : {}) },
+      redirect: "manual",
+      signal:   AbortSignal.timeout(12_000),
+    });
+  } catch (err) {
+    /* "fetch failed" sozinho não diz nada: a causa (certificado, DNS, recusa, tempo) vai junto */
+    const e = err as Error & { cause?: { code?: string; message?: string } };
+    const causa = e.name === "TimeoutError" ? "tempo esgotado (12 s)" : (e.cause?.code ?? e.cause?.message ?? e.message);
+    throw new Error(`conexão com ${url.hostname}: ${causa}`);
+  }
+  return {
+    status: res.status, location: res.headers.get("location"), setCookies: res.headers.getSetCookie(),
+    contentType: res.headers.get("content-type"), bytes: new Uint8Array(await res.arrayBuffer()),
+  };
+}
+
+/* ── Ponte no Brasil (2026-10-23): a Edge Function supabase/functions/nfce-ponte, rodando em São Paulo
+   (x-region sa-east-1), faz o pedido para os portais que recusam quem está fora do Brasil. Ela só aceita
+   uma secret key do projeto (a mesma SUPABASE_SERVICE_ROLE_KEY da API) e só abre .gov.br ── */
+const PONTE_URL   = process.env.SUPABASE_URL ? `${process.env.SUPABASE_URL}/functions/v1/nfce-ponte` : null;
+/* Diagnóstico de 2026-10-23 a partir do Railway: ES, MA, RO, TO, PA e SE não deixam conectar de fora */
+const PONTE_PRIMEIRO = new Set(["32", "21", "11", "17", "15", "28"]);
+
+async function saltoPelaPonte(url: URL, cookie: string): Promise<Salto> {
+  const chave = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!PONTE_URL || !chave) throw new Error("ponte sem configuração (SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY)");
+  let res: Response;
+  try {
+    res = await fetch(PONTE_URL, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json", apikey: chave, "x-region": "sa-east-1" },
+      body:    JSON.stringify({ url: url.toString(), cookie }),
+      signal:  AbortSignal.timeout(20_000),
+    });
+  } catch (err) {
+    throw new Error(`ponte: ${(err as Error).name === "TimeoutError" ? "tempo esgotado (20 s)" : (err as Error).message}`);
+  }
+  const j = await res.json().catch(() => ({})) as {
+    status?: number; location?: string | null; setCookie?: string[]; contentType?: string | null; corpo?: string; erro?: string; message?: string;
+  };
+  if (!res.ok || typeof j.status !== "number") throw new Error(`ponte: ${j.erro ?? j.message ?? `HTTP ${res.status}`}`);
+  return {
+    status: j.status, location: j.location ?? null, setCookies: j.setCookie ?? [],
+    contentType: j.contentType ?? null, bytes: new Uint8Array(Buffer.from(j.corpo ?? "", "base64")),
+  };
+}
+
 /* Abre a página seguindo os redirecionamentos com os cookies: a Bahia guarda a nota na sessão e
    redireciona para a página do DANFE (sem o cookie, cai no captcha). Não sai de portais .gov.br */
-async function buscarPagina(inicio: URL): Promise<{ html: string; url: URL }> {
+async function buscarPagina(inicio: URL, pelaPonte = false): Promise<{ html: string; url: URL; pelaPonte: boolean }> {
+  const salto   = pelaPonte ? saltoPelaPonte : saltoDireto;
   const cookies = new Map<string, string>();
   let url = inicio;
-  for (let salto = 0; salto < 6; salto++) {
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        headers:  { ...FETCH_HEADERS, ...(cookies.size ? { Cookie: [...cookies].map(([k, v]) => `${k}=${v}`).join("; ") } : {}) },
-        redirect: "manual",
-        signal:   AbortSignal.timeout(12_000),
-      });
-    } catch (err) {
-      /* "fetch failed" sozinho não diz nada: a causa (certificado, DNS, recusa, tempo) vai junto */
-      const e = err as Error & { cause?: { code?: string; message?: string } };
-      const causa = e.name === "TimeoutError" ? "tempo esgotado (12 s)" : (e.cause?.code ?? e.cause?.message ?? e.message);
-      throw new Error(`conexão com ${url.hostname}: ${causa}`);
-    }
-    for (const c of res.headers.getSetCookie()) {
+  for (let n = 0; n < 6; n++) {
+    const r = await salto(url, [...cookies].map(([k, v]) => `${k}=${v}`).join("; "));
+    for (const c of r.setCookies) {
       const par = c.split(";")[0];
       const i   = par.indexOf("=");
       if (i > 0) cookies.set(par.slice(0, i).trim(), par.slice(i + 1).trim());
     }
-    if (res.status >= 300 && res.status < 400) {
-      const destino = res.headers.get("location");
-      await res.body?.cancel();
-      if (!destino) throw new Error(`HTTP ${res.status} sem destino`);
-      url = new URL(destino, url);
+    if (r.status >= 300 && r.status < 400) {
+      if (!r.location) throw new Error(`HTTP ${r.status} sem destino`);
+      url = new URL(r.location, url);
       if (!ehPortalSefaz(url)) throw new Error(`redirecionou para fora da SEFAZ (${url.hostname})`);
       continue;
     }
-    if (!res.ok) throw new Error(`HTTP ${res.status} em ${url.hostname}`);
-    return { html: decodificar(new Uint8Array(await res.arrayBuffer()), res.headers.get("content-type")), url };
+    if (r.status < 200 || r.status >= 300) throw new Error(`HTTP ${r.status} em ${url.hostname}${pelaPonte ? " (pela ponte)" : ""}`);
+    return { html: decodificar(r.bytes, r.contentType), url, pelaPonte };
   }
   throw new Error("redirecionamentos demais");
+}
+
+/* Estados que bloqueiam o exterior vão direto pela ponte; nos outros, a ponte entra se a conexão
+   direta falhar (assim um estado que passar a bloquear amanhã continua funcionando) */
+async function buscarPaginaDoEstado(url: URL, cUF: string) {
+  if (PONTE_URL && PONTE_PRIMEIRO.has(cUF)) return buscarPagina(url, true);
+  try {
+    return await buscarPagina(url);
+  } catch (err) {
+    if (!PONTE_URL || !/^conexão com /.test((err as Error).message)) throw err;
+    try {
+      return await buscarPagina(url, true);
+    } catch (errPonte) {
+      throw new Error(`${(err as Error).message}; pela ponte: ${(errPonte as Error).message}`);
+    }
+  }
 }
 
 /* Página de verificação de robô: pelo HTML ou pelo endereço para onde o portal mandou (AC, SC) */
@@ -245,7 +309,10 @@ export function lerItensDaPagina(html: string, url?: URL): NfceItem[] {
   throw new Error("HTML sem itens");
 }
 
-const fetchItens = async (url: URL) => { const p = await buscarPagina(url); return lerItensDaPagina(p.html, p.url); };
+const fetchItens = async (url: URL, cUF: string) => {
+  const p = await buscarPaginaDoEstado(url, cUF);
+  return lerItensDaPagina(p.html, p.url);
+};
 
 export interface Sondagem {
   /** ok = a página abriu sem captcha (com chave de teste, costuma ser "nota não encontrada") */
@@ -256,13 +323,13 @@ export interface Sondagem {
 }
 
 /** Diagnóstico (lib/nfceMonitor.ts): abre o endereço do estado e diz como o portal respondeu */
-export async function sondarPortal(url: URL): Promise<Sondagem> {
+export async function sondarPortal(url: URL, cUF: string): Promise<Sondagem> {
   try {
-    const { html, url: final } = await buscarPagina(url);
+    const { html, url: final, pelaPonte } = await buscarPaginaDoEstado(url, cUF);
     const $ = cheerio.load(html);
     $("script, style, noscript").remove();
     const trecho = $("body").text().replace(/\s+/g, " ").trim().slice(0, 300);
-    const destino = `${final.hostname}${final.pathname}`;
+    const destino = `${final.hostname}${final.pathname}${pelaPonte ? " (pela ponte no Brasil)" : ""}`;
     if (parseItens(html).length > 0) return { resultado: "ok", detalhe: `itens lidos em ${destino}`, trecho };
     if (ehCaptcha(html, final))      return { resultado: "captcha", detalhe: `captcha em ${destino}`, trecho };
     return { resultado: "ok", detalhe: `abriu ${destino}`, trecho };
@@ -294,7 +361,7 @@ export async function consultarNfce(chave: string, qrUrl?: string): Promise<Nfce
 
   /* Dispara todas as URLs em paralelo — vence a primeira que responder */
   try {
-    const lidos = await Promise.any(urls.map((url) => fetchItens(url)));
+    const lidos = await Promise.any(urls.map((url) => fetchItens(url, estadoCod)));
     /* Código interno do fornecedor ganha a raiz do CNPJ do emitente (está na chave) */
     const raiz  = cnpjRaizDaChave(chave);
     const itens = lidos.map((i) => ({ ...i, codigo: codigoDoItem(i.codigo, raiz) }));

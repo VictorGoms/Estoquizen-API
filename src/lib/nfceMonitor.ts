@@ -33,7 +33,7 @@ export async function diagnosticoNfce(log: FastifyBaseLogger, forcar = false) {
   const linhas = [];
   for (const [cod, montar] of Object.entries(PORTAIS)) {
     const url = new URL(montar(chaveDeTeste(cod))[0]);
-    const r   = await sondarPortal(url);
+    const r   = await sondarPortal(url, cod);
     linhas.push({
       uf:            ESTADO_NOME[cod] ?? cod,
       url:           `${url.origin}${url.pathname}`,
