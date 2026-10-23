@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { parseItens, lerItensDaPagina, linkDoQrValido } from "../src/lib/nfce.js";
+import { parseItens, lerItensDaPagina, linkDoQrValido, PORTAIS, ESTADO_NOME } from "../src/lib/nfce.js";
+import { chaveDeTeste, chaveValida } from "../src/lib/nfeChave.js";
 
 /* Tabela de itens da página do DANFE da SEFAZ-BA (cupom real de 2026-09, só a parte dos produtos).
    É o mesmo modelo de SP */
@@ -57,5 +58,26 @@ describe("link do QR Code do cupom", () => {
     expect(linkDoQrValido(QR.replace("http://", "http://usuario:senha@"), CHAVE)).toBeNull();
     expect(linkDoQrValido(QR, CHAVE.replace(/5$/, "6"))).toBeNull();
     expect(linkDoQrValido("não é link", CHAVE)).toBeNull();
+  });
+});
+
+describe("diagnóstico dos 27 estados", () => {
+  it("todos os estados têm endereço de portal .gov.br e sigla", () => {
+    const cods = Object.keys(PORTAIS);
+    expect(cods).toHaveLength(27);
+    for (const cod of cods) {
+      expect(ESTADO_NOME[cod], cod).toBeTruthy();
+      for (const url of PORTAIS[cod](chaveDeTeste(cod))) expect(new URL(url).hostname, url).toMatch(/\.gov\.br$/);
+    }
+  });
+
+  it("a chave de teste é válida, do estado e de NFC-e (modelo 65)", () => {
+    for (const cod of Object.keys(PORTAIS)) {
+      const k = chaveDeTeste(cod, new Date("2026-10-23T12:00:00Z"));
+      expect(chaveValida(k), cod).toBe(true);
+      expect(k.slice(0, 2)).toBe(cod);
+      expect(k.slice(2, 6)).toBe("2610");
+      expect(k.slice(20, 22)).toBe("65");
+    }
   });
 });

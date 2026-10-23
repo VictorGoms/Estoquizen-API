@@ -3,18 +3,33 @@
  * Espelhadas no front em src/lib/nfe.ts.
  */
 
-/** Dígito verificador (44º): módulo 11 com pesos 2 a 9 da direita para a esquerda. */
-export function chaveValida(chave: string): boolean {
-  if (!/^\d{44}$/.test(chave)) return false;
+/** Dígito verificador dos 43 primeiros números: módulo 11 com pesos 2 a 9 da direita para a esquerda. */
+export function digitoDaChave(inicio43: string): number {
   let soma = 0;
   let peso = 2;
   for (let i = 42; i >= 0; i--) {
-    soma += Number(chave[i]) * peso;
+    soma += Number(inicio43[i]) * peso;
     peso = peso === 9 ? 2 : peso + 1;
   }
   const resto = soma % 11;
-  const dv = resto < 2 ? 0 : 11 - resto;
-  return dv === Number(chave[43]);
+  return resto < 2 ? 0 : 11 - resto;
+}
+
+/**
+ * Chave de 44 números que passa na validação mas não é de nota nenhuma: UF + mês atual + CNPJ de exemplo
+ * (11.222.333/0001-81) + modelo 65 + série 1 + número 1 + emissão normal + código + dígito certo.
+ * Com ela o portal responde como responderia a uma nota de verdade que não existe.
+ */
+export function chaveDeTeste(cUF: string, agora = new Date()): string {
+  const aamm   = String(agora.getUTCFullYear()).slice(2) + String(agora.getUTCMonth() + 1).padStart(2, "0");
+  const inicio = `${cUF}${aamm}11222333000181650010000000011` + "12345678";
+  return inicio + digitoDaChave(inicio);
+}
+
+/** Chave de 44 números com o dígito verificador (44º) certo. */
+export function chaveValida(chave: string): boolean {
+  if (!/^\d{44}$/.test(chave)) return false;
+  return digitoDaChave(chave.slice(0, 43)) === Number(chave[43]);
 }
 
 /** Raiz do CNPJ do emitente (8 dígitos), que fica nas posições 7 a 14 da chave. */

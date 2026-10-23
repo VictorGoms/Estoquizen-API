@@ -14,6 +14,7 @@ import v1Routes      from "./routes/v1/index.js";
 import webhookRoutes from "./routes/webhooks.js";
 import cleanupRoutes from "./routes/admin/cleanup.js";
 import { runCleanup } from "./lib/cleanup.js";
+import { diagnosticoNfce } from "./lib/nfceMonitor.js";
 import { rateLimitKey } from "./lib/rateLimitKey.js";
 
 const PORT   = Number(process.env.PORT ?? 3001);
@@ -139,11 +140,23 @@ function runCleanupJob(origem: string) {
 
 cron.schedule("0 4 * * *", () => runCleanupJob("cron"));
 
+/* ── Diagnóstico da NFC-e (lib/nfceMonitor.ts): testa o portal de cada UF a partir do servidor.
+   Roda de verdade no máximo 1 vez a cada 7 dias (a função confere), na subida e no cron das 4h ── */
+let diagnosticoRodando = false;
+function runDiagnosticoNfce() {
+  if (diagnosticoRodando) return;
+  diagnosticoRodando = true;
+  diagnosticoNfce(fastify.log)
+    .catch((err) => fastify.log.error({ err }, "Erro no diagnóstico da NFC-e"))
+    .finally(() => { diagnosticoRodando = false; });
+}
+cron.schedule("15 4 * * *", () => runDiagnosticoNfce());
+
 /* ── Start ── */
 try {
   await fastify.listen({ port: PORT, host: "0.0.0.0" });
   /* Só em produção: o .env local aponta para o mesmo banco */
-  if (process.env.NODE_ENV === "production") runCleanupJob("inicio");
+  if (process.env.NODE_ENV === "production") { runCleanupJob("inicio"); runDiagnosticoNfce(); }
   console.log(`\n🚀 Estoquizen API rodando em http://localhost:${PORT}`);
   console.log(`📄 Documentação:          http://localhost:${PORT}/docs\n`);
 } catch (err) {

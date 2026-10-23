@@ -2,6 +2,7 @@ import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { consultarNfce, NfceError } from "../../lib/nfce.js";
+import { registrarFalhaNfce } from "../../lib/nfceMonitor.js";
 import { chaveValida } from "../../lib/nfeChave.js";
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { sanitizeText, sanitizeCode } from "../../lib/sanitize.js";
@@ -91,7 +92,11 @@ const nfeRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.send(ok({ chave, total_itens: itens.length, itens }));
       }
     } catch (err) {
-      if (err instanceof NfceError) return reply.status(err.status).send(fail(err.message));
+      if (err instanceof NfceError) {
+        /* Guarda a falha e avisa o contato@ (lib/nfceMonitor.ts); a resposta não espera o e-mail */
+        if (err.detalhe) void registrarFalhaNfce({ workspaceId: workspace_id, chave, qrUrl: qr_url, erro: err.message, detalhe: err.detalhe }, req.log);
+        return reply.status(err.status).send(fail(err.message));
+      }
       req.log.error({ err }, "falha inesperada na consulta da NFC-e");
       return reply.status(502).send(fail("Não foi possível consultar a nota agora. Tente de novo em alguns minutos."));
     }

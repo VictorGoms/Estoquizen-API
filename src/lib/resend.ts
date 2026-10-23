@@ -385,3 +385,61 @@ export async function sendWorkspaceDeletionEmail(params: {
     }),
   });
 }
+
+/* ── Alertas internos da leitura de NFC-e (2026-10-23): vão para o contato@ do Estoquizen ── */
+
+/** Uma leitura de cupom falhou num estado (no máximo 1 por estado por dia, quem controla é o nfceMonitor). */
+export async function sendNfceFalhaEmail(params: {
+  uf:      string;
+  erro:    string;
+  detalhe: string | null;
+  chave:   string;
+  qrUrl:   string | null;
+}) {
+  const { uf, erro, detalhe, chave, qrUrl } = params;
+  await send({
+    from:    FROM,
+    to:      CONTATO,
+    subject: `[Estoquizen] Leitura de NFC-e falhou em ${uf}`,
+    html: layoutEmail({
+      preheader: `Um cliente não conseguiu ler um cupom de ${uf}: ${erro}.`,
+      titulo:    `NFC-e falhou em ${escapeHtml(uf)}`,
+      destaque:  { tom: "zero", numero: "!", texto: escapeHtml(erro) },
+      corpo: `
+        Um cliente tentou ler um cupom fiscal de ${forte(escapeHtml(uf))} e não deu certo.<br><br>
+        ${forte("Detalhe técnico:")} ${escapeHtml(detalhe ?? "—")}<br>
+        ${forte("Chave:")} ${escapeHtml(chave)}<br>
+        ${qrUrl ? `${forte("Link do QR:")} ${link("abrir na SEFAZ", escapeHtml(qrUrl))}<br>` : ""}<br>
+        Todas as falhas ficam na tabela ${forte("nfce_falhas")} do banco. Os próximos avisos deste estado só
+        saem daqui a 24 horas.`,
+      rodape: "Aviso interno do Estoquizen para a equipe.",
+    }),
+  });
+}
+
+/** O diagnóstico semanal achou estados que deixaram de responder (ou que já começaram sem responder). */
+export async function sendNfceDiagnosticoEmail(params: {
+  quebrados: { uf: string; detalhe: string | null }[];
+  ok:        number;
+  captcha:   number;
+}) {
+  const { quebrados, ok, captcha } = params;
+  const lista = quebrados.map((q) => `${forte(escapeHtml(q.uf))}: ${escapeHtml(q.detalhe ?? "—")}`).join("<br>");
+  await send({
+    from:    FROM,
+    to:      CONTATO,
+    subject: `[Estoquizen] Diagnóstico da NFC-e: ${quebrados.length} estado(s) com problema`,
+    html: layoutEmail({
+      preheader: `${quebrados.length} estado(s) não responderam ao teste semanal da NFC-e.`,
+      titulo:    "Diagnóstico da NFC-e",
+      destaque:  { tom: "low", numero: String(quebrados.length), texto: "estado(s) não responderam ao teste desta semana" },
+      corpo: `
+        O servidor testou o portal da SEFAZ de cada estado com uma chave de teste.<br><br>
+        ${lista}<br><br>
+        Os outros: ${forte(String(ok))} abriram normalmente e ${forte(String(captcha))} pedem captcha na chave
+        digitada (nesses, só o QR Code ou o XML funcionam). O resultado completo fica na tabela
+        ${forte("nfce_diagnostico")} do banco.`,
+      rodape: "Aviso interno do Estoquizen para a equipe.",
+    }),
+  });
+}

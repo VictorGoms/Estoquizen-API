@@ -44,7 +44,8 @@ src/
     zodPt.ts             — mensagens padrão do Zod em português (importado no server.ts)
     sanitize.ts          — sanitizeText, sanitizeCode, sanitizeNumber, sanitizeEmail, sanitizeCpf
     plans.ts             — PLAN_LIMITS (basic/growth/pro) + getLimits() + dailyInvites
-    nfce.ts              — consultarNfce(chave) — faz scraping/consulta da SEFAZ
+    nfce.ts              — consultarNfce(chave, qrUrl?) — consulta a página pública da SEFAZ (27 UFs) e lê os itens; sondarPortal para o diagnóstico
+    nfceMonitor.ts       — falhas de leitura (nfce_falhas + e-mail ao contato@) e diagnóstico semanal das 27 UFs (nfce_diagnostico)
     stripe.ts            — cliente Stripe (apiVersion 2026-03-25.dahlia) + PRICE_IDS
     resend.ts            — e-mails pelo Resend: assinatura confirmada, plano alterado e cancelamento agendado (webhook), pausa agendada (POST /billing/pause) e pausa acabando (job), reta final do trial (resumo, último dia, fim) e os do job de limpeza (aviso, último aviso, exclusão); lança erro se o Resend recusar
     emailLayout.ts       — layout dos e-mails no tema "Noite Azul" (tabelas e estilo inline) + escapeHtml; também gera os modelos do Supabase Auth
@@ -130,6 +131,9 @@ mínimo, compartilhados pela equipe (qualquer membro ativo; gravar exige assinat
   - `buscarPagina` segue os redirecionamentos **guardando os cookies** (a BA guarda a nota na sessão; sem o cookie cai no captcha) e não sai de `.gov.br`. Com isso a BA abre até pela chave digitada (`qrcode.aspx?p=chave|3|1`), testado com cupom real
   - Portal em https com certificado da **ICP-Brasil** (raiz não reconhecida pelo Node, erro `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, que aparece como `fetch failed`): a BA vai por http. Outro estado com esse erro: usar http ou incluir a raiz da ICP-Brasil só nessas consultas
   - Página com captcha → erro `CAPTCHA` e mensagem pedindo o QR ou o XML. O código do item sai sem os parênteses do DANFE (`(Código: 789… )`); antes o EAN não era reconhecido e virava `raizCNPJ-EAN`
+  - **Endereços dos 27 estados** em `QR_PRODUCAO` (fonte: `storage/wsnfe_4.00_mod65.xml` do sped-nfe, 2025-07; o ENCAT estava fora do ar). **User-Agent honesto** (`Estoquizen/1.0`): o firewall de SP rejeita quem diz ser Chrome sem ser navegador. A página é lida no charset declarado (AM e RO usam ISO-8859-1). Captcha também reconhecido pelo endereço final (`resolve-captcha`, `SecurityVerify`). Porta 444 liberada (PE)
+  - **Monitoramento (`src/lib/nfceMonitor.ts`, 2026-10-23):** toda falha de leitura vai para `nfce_falhas` (estado, chave, link do QR, erro técnico; nunca o HTML, que pode ter o CPF do consumidor) e manda e-mail ao contato@ no máximo 1 vez por estado a cada 24 h. O **diagnóstico semanal** testa o portal de cada UF a partir do servidor com `chaveDeTeste` (chave válida que não é de nota nenhuma) e grava em `nfce_diagnostico` (ok/captcha/erro + trecho da página); estado que passou a dar erro manda e-mail. Roda na subida e no cron das 4h15 UTC, de verdade só a cada 7 dias; `POST /admin/nfce-diagnostico` (CRON_SECRET) força. Falhas com mais de 90 dias são apagadas
+  - Resultado de 2026-10-23 (feito do Brasil): abrem AL, AM, CE, ES, GO, MS, PB, PE, PR, RJ, RS e SP; pedem captcha na chave digitada AC, BA (com chave real abre), DF, MA, MG, RO e SC (nesses, só o QR completo); erro em AP e RN (certificado do estado), MT e TO (400), PA (conexão cortada), PI (endereço interno do estado), RR (404) e SE (lento)
 - `POST /nfe/importar` — `{ workspace_id, tipo, chave, itens[] }` (item com `product_id` soma no existente; sem, cria). Owner/admin, assinatura ativa, limite de produtos do plano. RPC `import_nota_fiscal` faz tudo numa transação e recusa a mesma chave no workspace (409 com a data da importação anterior)
 
 ## Planos — `src/lib/plans.ts`
@@ -155,6 +159,8 @@ O slug `intermediate` foi renomeado para `growth` — constraint e dados já atu
 - `shopping_list_items` — lista de compras à mão: workspace_id, product_id (único por workspace), qty, added_by, created_at. Membros leem pela RLS; gravar só pela API
 - `cancel_feedback`   — motivo do cancelamento e o que a pessoa fez (cancelar, pausar, trocar_plano), EQZ-07. RLS sem policies
 - `invite_log`        — cada e-mail de convite enviado (workspace_id, invited_by, created_at), para o limite diário. RLS sem policies
+- `nfce_falhas`       — leituras de NFC-e que falharam (workspace_id, uf, chave, qr_url, erro, detalhe, avisado, created_at), 90 dias. RLS sem policies
+- `nfce_diagnostico`  — último teste de cada UF (uf, url, resultado ok/captcha/erro, detalhe, trecho, verificado_em). RLS sem policies
 
 Trigger `protect_workspace_owner` (BEFORE UPDATE/DELETE em `workspace_members`): só owner promove alguém a owner ou altera/remove outro owner, e o workspace nunca fica sem owner ativo. Vale também para as escritas diretas do front; o service_role passa direto.
 
