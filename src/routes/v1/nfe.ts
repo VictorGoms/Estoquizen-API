@@ -63,6 +63,9 @@ const ImportarSchema = z.object({
     unit:       z.string().transform((v) => sanitizeText(v, 20)).optional(),
     price:      z.number().nonnegative("Preço não pode ser negativo").transform((v) => Math.round(v * 100) / 100).optional(),
     qty:        z.number().transform((v) => Math.round(v * 1000) / 1000).pipe(z.number().positive("Quantidade deve ser maior que zero")),
+    /* EQZ-34: item digitado à mão (a SEFAZ não deixou ler). Fica em nota_imports.itens para o catálogo
+       de códigos não tratar o nome como descrição do fornecedor */
+    manual:     z.boolean().optional(),
   })).min(1, "A nota não tem itens para importar").max(500, "Nota com itens demais"),
 });
 

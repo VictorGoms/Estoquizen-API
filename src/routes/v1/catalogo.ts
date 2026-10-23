@@ -32,9 +32,10 @@ const catalogoRoutes: FastifyPluginAsync = async (fastify) => {
 
     const fontes: FonteNome[] = [
       ...produtos.data.map((p) => ({ nome: p.name as string, dono: donoDe(p.workspace_id), daNota: false })),
-      ...notas.data.flatMap((n) => (n.itens as { code?: string; name?: string }[])
+      /* Item digitado à mão numa nota (EQZ-34) conta como nome digitado, não como descrição do fornecedor */
+      ...notas.data.flatMap((n) => (n.itens as { code?: string; name?: string; manual?: boolean }[])
         .filter((i) => i.code === codigo && i.name)
-        .map((i) => ({ nome: i.name!, dono: donoDe(n.workspace_id), daNota: true }))),
+        .map((i) => ({ nome: i.name!, dono: donoDe(n.workspace_id), daNota: !i.manual }))),
     ];
     return reply.send(ok(nomeSugerido(fontes)));
   });
