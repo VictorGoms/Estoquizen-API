@@ -125,7 +125,11 @@ mínimo, compartilhados pela equipe (qualquer membro ativo; gravar exige assinat
 - `DELETE /members/:id?workspace_id=xxx` — remove membro ativo do workspace
 
 ### NFC-e — `src/routes/v1/nfe.ts`
-- `POST /nfe/consultar` — recebe `{ tipo: "nfce", chave: "44 dígitos", workspace_id }` e retorna lista de itens (`{ chave, total_itens, itens[] }`). Owner/admin e plano com `nfe`
+- `POST /nfe/consultar` — recebe `{ tipo: "nfce", chave: "44 dígitos", workspace_id, qr_url? }` e retorna lista de itens (`{ chave, total_itens, itens[] }`). Owner/admin e plano com `nfe`
+  - `qr_url` (2026-10-23): o link lido do QR Code do cupom, com a assinatura que abre a nota sem captcha. `linkDoQrValido` só aceita portal `.gov.br` (portas padrão, sem usuário/senha) cuja chave (`p=chave|…` ou `chNFe=`) seja a da consulta; fora disso é ignorado. Vale para qualquer estado, mesmo fora de `PORTAIS`
+  - `buscarPagina` segue os redirecionamentos **guardando os cookies** (a BA guarda a nota na sessão; sem o cookie cai no captcha) e não sai de `.gov.br`. Com isso a BA abre até pela chave digitada (`qrcode.aspx?p=chave|3|1`), testado com cupom real
+  - Portal em https com certificado da **ICP-Brasil** (raiz não reconhecida pelo Node, erro `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, que aparece como `fetch failed`): a BA vai por http. Outro estado com esse erro: usar http ou incluir a raiz da ICP-Brasil só nessas consultas
+  - Página com captcha → erro `CAPTCHA` e mensagem pedindo o QR ou o XML. O código do item sai sem os parênteses do DANFE (`(Código: 789… )`); antes o EAN não era reconhecido e virava `raizCNPJ-EAN`
 - `POST /nfe/importar` — `{ workspace_id, tipo, chave, itens[] }` (item com `product_id` soma no existente; sem, cria). Owner/admin, assinatura ativa, limite de produtos do plano. RPC `import_nota_fiscal` faz tudo numa transação e recusa a mesma chave no workspace (409 com a data da importação anterior)
 
 ## Planos — `src/lib/plans.ts`

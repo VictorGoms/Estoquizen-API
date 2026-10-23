@@ -19,6 +19,9 @@ const ConsultarSchema = z.object({
   tipo:  z.enum(["nfce"]),
   chave: chaveSchema,
   workspace_id: z.string().uuid("workspace_id inválido"),
+  /* Link lido do QR Code do cupom (2026-10-23): abre a nota sem captcha. A lib só aceita portal .gov.br
+     com a mesma chave; fora disso é ignorado e vale a consulta pela chave */
+  qr_url: z.string().max(1000).optional(),
 });
 
 /** Início do mês corrente no horário de Brasília (UTC-3, sem horário de verão desde 2019). */
@@ -73,7 +76,7 @@ const nfeRoutes: FastifyPluginAsync = async (fastify) => {
     const parsed = ConsultarSchema.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
 
-    const { tipo, chave, workspace_id } = parsed.data;
+    const { tipo, chave, workspace_id, qr_url } = parsed.data;
 
     /* Só owner/admin de um workspace com o recurso no plano (antes qualquer conta consultava) */
     if (!await requireMember(workspace_id, req.user.id, reply, ["owner", "admin"])) return;
@@ -81,7 +84,7 @@ const nfeRoutes: FastifyPluginAsync = async (fastify) => {
 
     try {
       if (tipo === "nfce") {
-        const itens = await consultarNfce(chave);
+        const itens = await consultarNfce(chave, qr_url);
         if (itens.length === 0) {
           return reply.status(404).send(fail("Nenhum item encontrado. Verifique a chave e tente novamente."));
         }

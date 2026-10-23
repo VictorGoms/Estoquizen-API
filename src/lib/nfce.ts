@@ -44,7 +44,9 @@ const PORTAIS: Record<string, (chave: string) => string[]> = {
   "33": (k) => [`http://www4.fazenda.rj.gov.br/consultaNFCe/QRCode?p=${k}|3|1`],
   "43": (k) => [`https://www.sefaz.rs.gov.br/NFCE/NFCE-COM.aspx?p=${k}|3|1`],
   "31": (k) => [`https://nfce.fazenda.mg.gov.br/portalnfce/sistema/qrcode.xhtml?p=${k}|3|1`],
-  "29": (k) => [`https://nfe.sefaz.ba.gov.br/servicos/nfce/default.aspx?p=${k}|3|1`],
+  /* BA: por http (o https usa a raiz da ICP-Brasil, que o Node não reconhece). Só com a chave cai no
+     captcha: a nota da Bahia só abre pelo link completo do QR (ver consultarNfce) */
+  "29": (k) => [`http://nfe.sefaz.ba.gov.br/servicos/nfce/qrcode.aspx?p=${k}|3|1`],
   "23": (k) => [`http://nfce.sefaz.ce.gov.br/pages/showNFCe.html?p=${k}|3|1`],
   "32": (k) => [`https://app.sefaz.es.gov.br/ConsultaNFCe/qrcode.aspx?p=${k}|3|1`],
   "50": (k) => [`http://www.dfe.ms.gov.br/nfce/qrcode?p=${k}|3|1`],
@@ -108,13 +110,14 @@ function parseQtyUnit(rqtdText: string, unitFallback = ""): { quantidade: number
   return { quantidade, unidade, priceFactor };
 }
 
-function parseItens(html: string): NfceItem[] {
+export function parseItens(html: string): NfceItem[] {
   const $ = cheerio.load(html);
   const itens: NfceItem[] = [];
 
   /* Seletor padrão da maioria dos portais estaduais */
   $("#tabResult tr").each((_, row) => {
-    const nome = $(row).find(".txtTit").first().text().trim();
+    /* A SEFAZ alinha o nome com espaços ("NEUTRA          110V") */
+    const nome = $(row).find(".txtTit").first().text().replace(/\s+/g, " ").trim();
     if (!nome) return;
 
     /* unit can live inside .Rqtd ("Qtd.: 2 KG") or in a separate .RUN/.Rum/.RunMed cell */
@@ -122,7 +125,8 @@ function parseItens(html: string): NfceItem[] {
     const { quantidade, unidade, priceFactor } = parseQtyUnit($(row).find(".Rqtd").text(), unitEl);
     const valor_unitario = toFloat($(row).find(".RvlUnit").text()) * priceFactor;
     const valor_total    = toFloat($(row).find(".valor").text());
-    const codigo         = $(row).find(".RCod").text().replace(/[Cc]ód[^:]*:\s*/, "").trim();
+    /* "(Código: 7891000100103 )": sem os parênteses, senão o EAN não é reconhecido e vira código do fornecedor */
+    const codigo         = $(row).find(".RCod").text().replace(/[Cc]ód[^:]*:\s*/, "").replace(/[()\s]/g, "");
 
     itens.push({ nome, quantidade, unidade, codigo, valor_unitario, valor_total });
   });
@@ -130,44 +134,85 @@ function parseItens(html: string): NfceItem[] {
   return itens;
 }
 
-async function fetchItens(url: string): Promise<NfceItem[]> {
-  const res = await fetch(url, {
-    headers: FETCH_HEADERS,
-    redirect: "follow",
-    signal:   AbortSignal.timeout(5_000),
-  });
+/* Portal da SEFAZ: só endereços .gov.br, nas portas padrão (a API não vira proxy para outros sites) */
+const ehPortalSefaz = (u: URL) =>
+  (u.protocol === "http:" || u.protocol === "https:") && u.hostname.toLowerCase().endsWith(".gov.br")
+  && !u.username && !u.password && (!u.port || u.port === "80" || u.port === "443");
 
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-  const html  = await res.text();
-  const itens = parseItens(html);
-
-  if (itens.length === 0) {
-    console.warn("[NFC-e] Nenhum item parseado. Trecho do HTML:\n" + html.slice(0, 800));
-    throw new Error("HTML sem itens");
-  }
-
-  return itens;
+/**
+ * Link lido do QR Code do cupom (2026-10-23). Ele traz a chave e uma assinatura, e abre a nota sem captcha
+ * nos estados que pedem captcha na chave digitada (ex.: BA). Só vale link de portal da SEFAZ cuja chave
+ * (`p=chave|...` na versão 2/3, `chNFe=` na antiga) seja a mesma da consulta.
+ */
+export function linkDoQrValido(qrUrl: string, chave: string): URL | null {
+  let u: URL;
+  try { u = new URL(qrUrl.trim()); } catch { return null; }
+  if (!ehPortalSefaz(u)) return null;
+  const doLink = (u.searchParams.get("p")?.split("|")[0] ?? u.searchParams.get("chNFe") ?? "").replace(/\D/g, "");
+  return doLink === chave ? u : null;
 }
 
-export async function consultarNfce(chave: string): Promise<NfceItem[]> {
+/* Abre a página seguindo os redirecionamentos com os cookies: a Bahia guarda a nota na sessão e
+   redireciona para a página do DANFE (sem o cookie, cai no captcha). Não sai de portais .gov.br */
+async function buscarPagina(inicio: URL): Promise<string> {
+  const cookies = new Map<string, string>();
+  let url = inicio;
+  for (let salto = 0; salto < 6; salto++) {
+    const res = await fetch(url, {
+      headers:  { ...FETCH_HEADERS, ...(cookies.size ? { Cookie: [...cookies].map(([k, v]) => `${k}=${v}`).join("; ") } : {}) },
+      redirect: "manual",
+      signal:   AbortSignal.timeout(8_000),
+    });
+    for (const c of res.headers.getSetCookie()) {
+      const par = c.split(";")[0];
+      const i   = par.indexOf("=");
+      if (i > 0) cookies.set(par.slice(0, i).trim(), par.slice(i + 1).trim());
+    }
+    if (res.status >= 300 && res.status < 400) {
+      const destino = res.headers.get("location");
+      await res.body?.cancel();
+      if (!destino) throw new Error(`HTTP ${res.status} sem destino`);
+      url = new URL(destino, url);
+      if (!ehPortalSefaz(url)) throw new Error(`redirecionou para fora da SEFAZ (${url.hostname})`);
+      continue;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.text();
+  }
+  throw new Error("redirecionamentos demais");
+}
+
+/** Itens da página do DANFE; "CAPTCHA" quando o portal pediu o código de verificação */
+export function lerItensDaPagina(html: string): NfceItem[] {
+  const itens = parseItens(html);
+  if (itens.length > 0) return itens;
+  if (/captcha/i.test(html)) throw new Error("CAPTCHA");
+  console.warn("[NFC-e] Nenhum item parseado. Trecho do HTML:\n" + html.slice(0, 800));
+  throw new Error("HTML sem itens");
+}
+
+const fetchItens = async (url: URL) => lerItensDaPagina(await buscarPagina(url));
+
+export async function consultarNfce(chave: string, qrUrl?: string): Promise<NfceItem[]> {
   /* Cache hit — retorna instantâneo */
   const cached = cacheGet(chave);
   if (cached) return cached;
 
   const estadoCod = chave.slice(0, 2);
+  const uf        = ESTADO_NOME[estadoCod];
   const buildUrls = PORTAIS[estadoCod];
+  /* Link do QR: vale para qualquer estado, mesmo os que não estão em PORTAIS */
+  const qr = qrUrl ? linkDoQrValido(qrUrl, chave) : null;
 
-  if (!buildUrls) {
-    const uf = ESTADO_NOME[estadoCod];
+  if (!buildUrls && !qr) {
     throw new NfceError(
-      uf ? `Ainda não lemos NFC-e de ${uf} pela chave. Use o XML da nota, se tiver.`
+      uf ? `Ainda não lemos NFC-e de ${uf} pela chave digitada. Leia o QR Code do cupom ou use o XML da nota.`
          : "Essa chave não é de nenhum estado. Confira os 2 primeiros números.",
       422,
     );
   }
 
-  const urls = buildUrls(chave);
+  const urls = [...(qr ? [qr] : []), ...(buildUrls ? buildUrls(chave).map((u) => new URL(u)) : [])];
 
   /* Dispara todas as URLs em paralelo — vence a primeira que responder */
   try {
@@ -182,9 +227,16 @@ export async function consultarNfce(chave: string): Promise<NfceItem[]> {
        (antes a pessoa via "HTML sem itens | HTML sem itens | HTML sem itens") */
     const erros  = err instanceof AggregateError ? err.errors as Error[] : [err as Error];
     const detail = erros.map((e) => e?.message ?? String(e)).join(" | ");
-    console.warn(`[NFC-e] consulta falhou (${chave.slice(0, 6)}…): ${detail}`);
+    console.warn(`[NFC-e] consulta falhou (${chave.slice(0, 6)}…${qr ? ", com o link do QR" : ""}): ${detail}`);
 
-    if (erros.every((e) => e?.message === "HTML sem itens")) {
+    /* Estado que pede captcha na chave digitada (ex.: BA) e a pessoa não leu o QR */
+    if (!qr && erros.some((e) => e?.message === "CAPTCHA")) {
+      throw new NfceError(
+        `${uf ? `Em ${uf}, a` : "A"} consulta pela chave digitada pede um código de verificação. Leia o QR Code do cupom ou use o XML da nota.`,
+        422,
+      );
+    }
+    if (erros.every((e) => e?.message === "HTML sem itens" || e?.message === "CAPTCHA")) {
       throw new NfceError(
         "Não encontramos essa nota no portal da SEFAZ. Confira a chave; notas emitidas há poucos minutos podem demorar para aparecer.",
         404,
