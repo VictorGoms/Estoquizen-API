@@ -23,3 +23,14 @@ export function prazoDaDesistencia(faturas: FaturaPaga[]): number | null {
 
 /** Quanto volta na desistência: tudo o que a assinatura pagou (centavos). */
 export const totalPago = (faturas: FaturaPaga[]) => faturas.reduce((soma, f) => soma + f.valor, 0);
+
+/**
+ * Por onde desistir (decisão do João, 2026-10-23): no prazo, pelo app na 1ª vez da pessoa (usuário ou
+ * CPF, tabela desistencias); da 2ª em diante, pelo contato@, caso a caso. Fora do prazo, não tem.
+ */
+export type CaminhoDesistencia = "app" | "contato" | null;
+
+export function caminhoDaDesistencia(prazo: number | null, agora: number, jaDesistiu: boolean): CaminhoDesistencia {
+  if (!prazo || agora > prazo) return null;
+  return jaDesistiu ? "contato" : "app";
+}

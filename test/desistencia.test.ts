@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { prazoDaDesistencia, totalPago, DIAS_DESISTENCIA } from "../src/lib/desistencia.js";
+import { prazoDaDesistencia, totalPago, caminhoDaDesistencia, DIAS_DESISTENCIA } from "../src/lib/desistencia.js";
 
 /* O resend.ts cria o cliente do Resend ao ser importado e ele exige uma chave; nada é enviado aqui */
 process.env.RESEND_API_KEY ??= "re_teste";
@@ -22,6 +22,15 @@ describe("prazo da desistência (EQZ-50, CDC art. 49)", () => {
   it("assinatura sem pagamento não tem o que devolver", () => {
     expect(prazoDaDesistencia([])).toBeNull();
     expect(totalPago([])).toBe(0);
+  });
+
+  it("pelo app só na 1ª vez da pessoa; depois, pelo contato@ (contra assinar e desistir em sequência)", () => {
+    const prazo = (primeiro + 7 * DIA) * 1000;
+    const noPrazo = (primeiro + 2 * DIA) * 1000;
+    expect(caminhoDaDesistencia(prazo, noPrazo, false)).toBe("app");
+    expect(caminhoDaDesistencia(prazo, noPrazo, true)).toBe("contato");
+    expect(caminhoDaDesistencia(prazo, prazo + 1, false)).toBeNull();
+    expect(caminhoDaDesistencia(null, noPrazo, false)).toBeNull();
   });
 });
 

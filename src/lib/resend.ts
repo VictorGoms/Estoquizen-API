@@ -14,7 +14,7 @@ async function send(payload: Parameters<typeof resend.emails.send>[0]) {
 
 const siteUrl = () => (process.env.ALLOWED_ORIGINS ?? "https://www.estoquizen.com.br").split(",")[0].trim();
 /* Contato com os clientes (o mesmo dos Termos e da Política); recebe pelo ImprovMX */
-const CONTATO = "contato@estoquizen.com.br";
+export const CONTATO = "contato@estoquizen.com.br";
 
 /* Data de exclusão por extenso curto ("19/11"), no horário de Brasília */
 const diaMes = (d: Date) => d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", timeZone: "America/Sao_Paulo" });

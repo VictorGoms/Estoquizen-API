@@ -7,8 +7,9 @@ import { expireTrialIfDue } from "../../lib/checkSubscription.js";
 import { pausaEmAndamento, somarMeses } from "../../lib/pausa.js";
 import { getLimits } from "../../lib/plans.js";
 import { CancelFeedbackSchema } from "../../schemas/billing.schema.js";
-import { sendPauseScheduledEmail, sendWithdrawalEmail, sendManualRefundEmail } from "../../lib/resend.js";
-import { prazoDaDesistencia, totalPago, type FaturaPaga } from "../../lib/desistencia.js";
+import { sendPauseScheduledEmail, sendWithdrawalEmail, sendManualRefundEmail, CONTATO } from "../../lib/resend.js";
+import { prazoDaDesistencia, totalPago, caminhoDaDesistencia, type FaturaPaga } from "../../lib/desistencia.js";
+import { createHash } from "node:crypto";
 
 const OWNER_ONLY = "Só o owner do workspace pode gerenciar a assinatura.";
 
@@ -30,6 +31,20 @@ async function faturasPagas(subscriptionId: string): Promise<FaturaPaga[]> {
 }
 
 const dataBR = (ms: number) => new Date(ms).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+
+/* A pessoa já desistiu pelo app antes? Pelo usuário e pelo CPF codificado, o mesmo SHA-256 do
+   trial_grants (EQZ-50, tabela desistencias: 1 vez por pessoa pelo app) */
+async function desistiuAntes(userId: string): Promise<{ jaDesistiu: boolean; cpfHash: string | null }> {
+  const { data: perfil, error: erroPerfil } = await supabaseAdmin.from("profiles").select("cpf").eq("id", userId).maybeSingle();
+  if (erroPerfil) throw erroPerfil;
+  const cpfHash  = perfil?.cpf ? createHash("sha256").update(perfil.cpf).digest("hex") : null;
+  const consulta = supabaseAdmin.from("desistencias").select("id", { count: "exact", head: true });
+  const { count, error } = await (cpfHash ? consulta.or(`user_id.eq.${userId},cpf_hash.eq.${cpfHash}`) : consulta.eq("user_id", userId));
+  if (error) throw error;
+  return { jaDesistiu: (count ?? 0) > 0, cpfHash };
+}
+
+const JA_DESISTIU = `Você já usou a desistência pelo app uma vez. Para pedir de novo, escreva para ${CONTATO}: respondemos em até 1 dia útil.`;
 
 /**
  * Mudar para um plano só se o uso couber nele. Sem isso, quem tem 120 produtos desceria para o
@@ -327,7 +342,8 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   /* GET /billing/desistencia?workspace_id=xxx — dá para desistir com o valor de volta (EQZ-50)?
-     Até quando (7 dias do 1º pagamento da assinatura) e quanto volta, em centavos */
+     Até quando (7 dias do 1º pagamento da assinatura), quanto volta, em centavos, e por onde:
+     disponivel (pelo app) ou pelo_contato (a pessoa já desistiu pelo app antes) */
   fastify.get("/billing/desistencia", auth, async (req, reply) => {
     const { workspace_id } = req.query as { workspace_id?: string };
     if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
@@ -340,14 +356,23 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
       .eq("workspace_id", workspace_id)
       .maybeSingle();
 
-    const nada = { disponivel: false, ate: null, valor: 0 };
+    const nada = { disponivel: false, pelo_contato: false, ate: null, valor: 0 };
     if (!sub?.stripe_subscription_id || !["active", "past_due"].includes(sub.status)) return reply.send(ok(nada));
 
     try {
       const faturas = await faturasPagas(sub.stripe_subscription_id);
       const prazo   = prazoDaDesistencia(faturas);
       if (!prazo || Date.now() > prazo) return reply.send(ok(nada));
-      return reply.send(ok({ disponivel: true, ate: new Date(prazo).toISOString(), valor: totalPago(faturas) }));
+      /* Sem conseguir conferir, manda pelo contato@: o direito continua, só não é automático */
+      const jaDesistiu = await desistiuAntes(req.user.id).then((r) => r.jaDesistiu).catch((err) => {
+        req.log.error({ err, workspace_id }, "falha ao conferir desistências anteriores");
+        return true;
+      });
+      const caminho = caminhoDaDesistencia(prazo, Date.now(), jaDesistiu);
+      return reply.send(ok({
+        disponivel: caminho === "app", pelo_contato: caminho === "contato",
+        ate: new Date(prazo).toISOString(), valor: totalPago(faturas),
+      }));
     } catch (err) {
       if (stripeMissing(err)) return reply.send(ok(nada));
       req.log.error({ err, workspace_id }, "falha ao ler as faturas para a desistência");
@@ -387,6 +412,17 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
     if (!prazo) return reply.status(409).send(fail("Esta assinatura ainda não teve pagamento para devolver."));
     if (Date.now() > prazo) {
       return reply.status(409).send(fail(`O prazo de 7 dias para desistir acabou em ${dataBR(prazo)}. Você ainda pode cancelar: o acesso vai até o fim do mês pago.`));
+    }
+
+    /* Pelo app, 1 vez por pessoa; da 2ª em diante, pelo contato@ */
+    let cpfHash: string | null;
+    try {
+      const antes = await desistiuAntes(req.user.id);
+      if (antes.jaDesistiu) return reply.status(409).send(fail(JA_DESISTIU));
+      cpfHash = antes.cpfHash;
+    } catch (err) {
+      req.log.error({ err, workspace_id }, "falha ao conferir desistências anteriores");
+      return reply.status(502).send(fail("Não foi possível desistir agora. Tente novamente."));
     }
 
     /* 1) Devolve cada pagamento das faturas. Sem PaymentIntent ou recusado pelo Stripe: à mão */
@@ -443,9 +479,16 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
       .eq("workspace_id", workspace_id);
     if (error) req.log.error({ err: error, workspace_id }, "desistência feita no Stripe, mas não gravou no banco (o webhook acerta)");
 
-    /* 4) E-mails: confirmação ao dono (o decreto pede confirmação imediata) e, se faltou devolver
-       algo, aviso ao contato@. Falha no e-mail só vai para o log: a desistência já valeu */
+    /* 4) Registra para a regra de 1 vez por pessoa. Só depois de cancelar: se o cancelamento falhar,
+       a pessoa tenta de novo sem esbarrar na regra */
     const manual = manuais.reduce((soma, m) => soma + m.valor, 0);
+    const { error: erroRegistro } = await supabaseAdmin.from("desistencias").insert({
+      user_id: req.user.id, cpf_hash: cpfHash, workspace_id, stripe_subscription_id: sub.stripe_subscription_id, devolvido, manual,
+    });
+    if (erroRegistro) req.log.error({ err: erroRegistro, workspace_id }, "desistência feita, mas não gravou em desistencias (a regra de 1 vez não vai valer para ela)");
+
+    /* 5) E-mails: confirmação ao dono (o decreto pede confirmação imediata) e, se faltou devolver
+       algo, aviso ao contato@. Falha no e-mail só vai para o log: a desistência já valeu */
     try {
       const { data: ws } = await supabaseAdmin.from("workspaces").select("name, created_by").eq("id", workspace_id).maybeSingle();
       const { data: dono } = ws
