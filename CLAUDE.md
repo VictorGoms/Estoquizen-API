@@ -447,8 +447,8 @@ Detalhes da API `2026-03-25.dahlia` (SCRUM-46 e 47):
      - **último dia** nas últimas 36 h do teste: o que acontece depois (bloqueado, dados guardados 30 dias) e "Assinar agora"
      - **fim** de 1 a 3 dias depois de `expired_at` (só `trial_expired`): até quando os dados ficam guardados, assinar ou exportar. Passou de 3 dias, não manda
      As janelas são largas porque a API dorme no Railway; quem não abre o app depende de alguém acordar a API
-  7. **Fotos (2026-10-23):** as fotos de produto ficam no Storage (`product-images/<workspace_id>/`), fora do cascade do banco. A exclusão (passo 2 e `DELETE /workspaces/:id`) apaga a pasta com `apagarFotosDoWorkspace` (`src/lib/fotos.ts`), e cada rodada varre as pastas de workspaces que não existem mais (`apagarFotosOrfas`; só pasta com nome UUID, e para tudo se não conseguir conferir no banco)
   6. **Pausa acabando (EQZ-07):** `pause_ends_at` entre 1 e 3 dias à frente e `pause_reminder_sent_at` vazio → avisa que a cobrança e o acesso voltam nesse dia (uma vez por pausa; pausar ou retomar zera a marca). O "Pausa agendada" sai na hora, pela rota `POST /billing/pause`
+  7. **Fotos (2026-10-23):** as fotos de produto ficam no Storage (`product-images/<workspace_id>/`), fora do cascade do banco. A exclusão (passo 2 e `DELETE /workspaces/:id`) apaga a pasta com `apagarFotosDoWorkspace` (`src/lib/fotos.ts`), e cada rodada varre as pastas de workspaces que não existem mais (`apagarFotosOrfas`; só pasta com nome UUID, e para tudo se não conseguir conferir no banco)
 - Emails via **Resend** (`src/lib/resend.ts`) — HTTP, sem SMTP bloqueado no Railway
 - Endpoint manual `POST /admin/cleanup` (protegido por `CRON_SECRET`) para forçar execução
 
