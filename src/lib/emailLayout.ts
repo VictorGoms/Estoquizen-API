@@ -77,7 +77,7 @@ export function layoutEmail({ preheader, titulo, corpo, destaque, botao, rodape 
   <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&display=swap" rel="stylesheet">
 </head>
 <body style="margin:0;padding:0;background:${COR.ink}">
-  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:${COR.ink}">${preheader}</div>
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:${COR.ink}">${escapeHtml(preheader)}</div>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${COR.ink};padding:32px 12px">
     <tr><td align="center">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px">

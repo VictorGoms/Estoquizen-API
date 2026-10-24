@@ -11,6 +11,10 @@ describe("sanitize", () => {
     expect(sanitizeText("abcdef", 3)).toBe("abc");
     expect(sanitizeText(42)).toBe("");
   });
+  it("texto: tag aberta também sai (viraria link no e-mail de convite, run-2 da auditoria)", () => {
+    expect(sanitizeText('Loja <a href="https://golpe.com" style=x')).toBe('Loja a href="https://golpe.com" style=x');
+    expect(sanitizeText("Bar > Cia < Ltda")).toBe("Bar Cia Ltda");
+  });
   it("código: só letras, números, hífen, ponto e sublinhado, em maiúsculas", () => {
     expect(sanitizeCode(" abc-12 3!@ ")).toBe("ABC-123");
   });
@@ -66,6 +70,11 @@ describe("layout dos e-mails", () => {
     for (const t of ["Título do e-mail", "Corpo", "Abrir", "https://www.estoquizen.com.br/dashboard", "Rodapé", "#fbbf24"]) {
       expect(html).toContain(t);
     }
+  });
+  it("a prévia (preheader) leva o nome do workspace e sai escapada (run-2 da auditoria)", () => {
+    const html = layoutEmail({ preheader: `O workspace Loja <a href="https://golpe.com" foi excluído`, titulo: "T", corpo: "C" });
+    expect(html).not.toContain(`<a href="https://golpe.com"`);
+    expect(html).toContain("Loja &lt;a href=&quot;https://golpe.com&quot;");
   });
 });
 

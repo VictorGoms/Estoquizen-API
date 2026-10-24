@@ -9,6 +9,7 @@ export function sanitizeText(value: unknown, maxLength = 500): string {
   return value
     .replace(/\0/g, "")               // null bytes
     .replace(/<[^>]*>/g, "")          // tags HTML
+    .replace(/[<>]/g, "")             // e o que sobra de tag aberta ("Loja <a href=..."), que viraria link no e-mail
     .replace(/[^\S\r\n]+/g, " ")      // espaços múltiplos
     .trim()
     .slice(0, maxLength);
