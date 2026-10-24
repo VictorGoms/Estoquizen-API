@@ -1,10 +1,11 @@
 import type { FastifyPluginAsync } from "fastify";
-import { CreateProductSchema, UpdateProductSchema, AdjustQtySchema, CountSchema, ImportProductsSchema } from "../../schemas/product.schema.js";
+import { CreateProductSchema, UpdateProductSchema, AdjustQtySchema, CountSchema, ImportProductsSchema, MAX_IMPORTACAO } from "../../schemas/product.schema.js";
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { getLimits } from "../../lib/plans.js";
 import { requireMember, type Role } from "../../lib/membership.js";
 import { assertActiveSubscription, getProductWorkspaceId } from "../../lib/checkSubscription.js";
+import { listaGrandeDemais } from "../../lib/sanitize.js";
 
 /* Cadastrar, editar e excluir produto é de dono e admin (SCRUM-62). Entrada, saída e contagem
    ficam com qualquer membro: as RPCs só exigem ser do workspace */
@@ -126,6 +127,10 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
   /* POST /products/import — importa os produtos de uma planilha (EQZ-14) numa transação só
      (RPC import_products). Código que já existe no workspace é pulado e volta em "ignorados". */
   fastify.post("/products/import", authImport, async (req, reply) => {
+    /* Antes do schema: lista enorme travava e podia derrubar a API (EQZ-59) */
+    if (listaGrandeDemais(req.body, "itens", MAX_IMPORTACAO)) {
+      return reply.status(400).send(fail(`Importe até ${MAX_IMPORTACAO} produtos por vez`));
+    }
     const parsed = ImportProductsSchema.safeParse(req.body);
     if (!parsed.success) {
       const issue = parsed.error.errors[0];

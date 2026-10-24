@@ -36,6 +36,16 @@ export function sanitizeEmail(value: unknown): string {
   return sanitizeText(value, 254).toLowerCase();
 }
 
+/**
+ * Lista grande demais para mandar ao schema (EQZ-59). O zod 3 valida item por item mesmo depois de
+ * passar do `.max()`: 1 milhão de itens vazios num corpo de 3 MB viravam 1 milhão de erros, +600 MB de
+ * memória e 3 s de CPU (medido em 2026-10-23), o bastante para derrubar a API. Confere antes do schema.
+ */
+export function listaGrandeDemais(corpo: unknown, campo: string, max: number): boolean {
+  const lista = corpo && typeof corpo === "object" ? (corpo as Record<string, unknown>)[campo] : undefined;
+  return Array.isArray(lista) && lista.length > max;
+}
+
 /** Remove formatação do CPF e valida dígitos verificadores. Retorna apenas dígitos ou null se inválido. */
 export function sanitizeCpf(value: unknown): string | null {
   if (typeof value !== "string") return null;

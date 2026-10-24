@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { nomeSugerido, normalizarNome } from "../src/lib/catalogo.js";
+import { nomeSugerido, normalizarNome, linhasDoCatalogo } from "../src/lib/catalogo.js";
 
 describe("catálogo próprio de códigos de barras (EQZ-53)", () => {
   it("nome digitado por uma empresa só não aparece para as outras (pode ser teste)", () => {
@@ -38,5 +38,17 @@ describe("catálogo próprio de códigos de barras (EQZ-53)", () => {
 
   it("compara sem maiúscula, acento e espaço sobrando", () => {
     expect(normalizarNome("  Carvão   Fumax ")).toBe("carvao fumax");
+  });
+});
+
+describe("itens lidos da SEFAZ que entram no catálogo (EQZ-60)", () => {
+  it("só código de barras de verdade, nome limpo e sem repetir", () => {
+    expect(linhasDoCatalogo([
+      { codigo: "7891000100103", nome: "  LEITE  CONDENSADO 395G " },
+      { codigo: "7891000100103", nome: "LEITE CONDENSADO 395G" },
+      { codigo: "12345678-002",  nome: "CODIGO INTERNO DO FORNECEDOR" },
+      { codigo: "7891000100104", nome: "DIGITO ERRADO" },
+      { codigo: "7894900011517", nome: "   " },
+    ], "35")).toEqual([{ codigo: "7891000100103", nome: "LEITE CONDENSADO 395G", uf: "35" }]);
   });
 });

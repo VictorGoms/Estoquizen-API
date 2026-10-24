@@ -49,6 +49,9 @@ const MAX_NUM = 999_999_999;
 const numImport = (casas: number) =>
   z.number().nonnegative("Número negativo na planilha").max(MAX_NUM, "Número grande demais na planilha").transform(round(casas));
 
+/* Teto da importação de planilha; a rota confere antes do schema (listaGrandeDemais) */
+export const MAX_IMPORTACAO = 2000;
+
 export const ImportProductsSchema = z.object({
   workspace_id: z.string().uuid("workspace_id inválido"),
   itens: z.array(z.object({
@@ -63,7 +66,7 @@ export const ImportProductsSchema = z.object({
     category: z.nullable(str(60)).optional(),
     supplier: z.nullable(str(200)).optional(),
     location: z.nullable(str(200)).optional(),
-  })).min(1, "A planilha não tem produtos para importar").max(2000, "Importe até 2000 produtos por vez"),
+  })).min(1, "A planilha não tem produtos para importar").max(MAX_IMPORTACAO, `Importe até ${MAX_IMPORTACAO} produtos por vez`),
 });
 
 export type CreateProductInput = z.infer<typeof CreateProductSchema>;

@@ -4,11 +4,37 @@
  * código (GTIN de verdade) e o nome; nunca preço, quantidade, fornecedor ou a empresa.
  *
  * Regra contra nome de teste ou sem sentido (pedido do João): um nome só é sugerido a outra empresa se
- * - veio de uma nota fiscal importada: é a descrição do fornecedor, lida da SEFAZ ou do XML, e a tela
- *   da nota não deixa editar; ou
+ * - a própria API leu esse nome no portal da SEFAZ (/nfe/consultar, tabela catalogo_sefaz): é a
+ *   descrição do fornecedor. XML e item digitado na revisão não contam: vêm do navegador (EQZ-60); ou
  * - foi digitado igual (sem diferença de maiúscula, acento e espaço) por 2 empresas de donos diferentes.
  * Um nome digitado por uma empresa só nunca aparece para as outras. Na tela é sempre uma sugestão.
  */
+
+import { gtinValido } from "./nfeChave.js";
+
+export interface LinhaCatalogo {
+  codigo: string;
+  nome:   string;
+  uf:     string;
+}
+
+/**
+ * Itens lidos da SEFAZ que entram no catálogo (EQZ-60): só código de barras de verdade (o código
+ * interno "raizCNPJ-código" de quem não tem GTIN fica de fora) e nome não vazio, sem repetir.
+ */
+export function linhasDoCatalogo(itens: { codigo: string; nome: string }[], uf: string): LinhaCatalogo[] {
+  const vistas = new Set<string>();
+  const linhas: LinhaCatalogo[] = [];
+  for (const item of itens) {
+    const nome = item.nome.replace(/\s+/g, " ").trim().slice(0, 200);
+    if (!nome || !gtinValido(item.codigo)) continue;
+    const chave = `${item.codigo}|${nome}`;
+    if (vistas.has(chave)) continue;
+    vistas.add(chave);
+    linhas.push({ codigo: item.codigo, nome, uf });
+  }
+  return linhas;
+}
 
 export interface FonteNome {
   nome:   string;
