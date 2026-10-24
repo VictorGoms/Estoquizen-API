@@ -148,6 +148,28 @@ async function isCurrentSubscription(wsId: string, subId: string): Promise<boole
   return !data?.stripe_subscription_id || data.stripe_subscription_id === subId;
 }
 
+/* Fatura paga de outra assinatura só vale se a gravada já não está valendo (assinou de novo depois de
+   cancelar). Com a gravada ativa, é uma segunda assinatura e não pode trocar a do workspace (EQZ-59) */
+async function podeAssumir(wsId: string, subId: string): Promise<boolean> {
+  const { data, error } = await supabaseAdmin
+    .from("subscriptions")
+    .select("stripe_subscription_id, status")
+    .eq("workspace_id", wsId)
+    .maybeSingle();
+  if (error) throw new Error(`subscriptions (${wsId}): ${error.message}`);
+  if (!data?.stripe_subscription_id || data.stripe_subscription_id === subId) return true;
+  return !["active", "past_due"].includes(data.status);
+}
+
+/* O mesmo evento pode chegar mais de uma vez (reenvio do Stripe). Grava o id antes de processar:
+   repetido → não refaz (nem os e-mails). Sem a tabela, segue sem a trava em vez de recusar */
+async function registrarEvento(event: Stripe.Event, log: { warn: (o: object, m: string) => void }): Promise<"novo" | "repetido"> {
+  const { error } = await supabaseAdmin.from("stripe_events").insert({ id: event.id, type: event.type });
+  if (error?.code === "23505") return "repetido";
+  if (error) log.warn({ err: error, eventId: event.id }, "stripe_events indisponível; evento processado sem a trava de repetição");
+  return "novo";
+}
+
 function invoiceSubscriptionId(invoice: Stripe.Invoice): string | undefined {
   const ref = invoice.parent?.subscription_details?.subscription;
   return typeof ref === "string" ? ref : ref?.id;
@@ -156,7 +178,15 @@ function invoiceSubscriptionId(invoice: Stripe.Invoice): string | undefined {
 const webhookRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post("/webhooks/stripe", async (req, reply) => {
     const sig    = req.headers["stripe-signature"] as string;
-    const secret = process.env.STRIPE_WEBHOOK_SECRET ?? "";
+    const secret = process.env.STRIPE_WEBHOOK_SECRET;
+
+    /* Sem o segredo, o SDK aceitaria um evento assinado com chave vazia, que qualquer um calcula, e
+       um Postman ativaria o Pro em qualquer workspace (EQZ-55, auditoria de 2026-10-23). 503 faz o
+       Stripe reenviar quando a variável voltar */
+    if (!secret?.startsWith("whsec_")) {
+      fastify.log.error("STRIPE_WEBHOOK_SECRET ausente ou inválida: webhook recusado");
+      return reply.status(503).send({ error: "Webhook não configurado" });
+    }
 
     let event: Stripe.Event;
     try {
@@ -168,6 +198,10 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       const msg = err instanceof Error ? err.message : "Erro desconhecido";
       fastify.log.error({ msg }, "Webhook Stripe: falha na verificação");
       return reply.status(400).send({ error: `Webhook Error: ${msg}` });
+    }
+
+    if (await registrarEvento(event, fastify.log) === "repetido") {
+      return reply.send({ received: true, repetido: true });
     }
 
     try {
@@ -209,7 +243,7 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
 
           const sub  = await stripe.subscriptions.retrieve(subId);
           const wsId = sub.metadata?.workspace_id;
-          if (!wsId) break;
+          if (!wsId || !await podeAssumir(wsId, subId)) break;
 
           const plan   = planOf(sub);
           const custId = typeof invoice.customer === "string" ? invoice.customer : invoice.customer?.id;
@@ -243,7 +277,9 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         }
 
         case "customer.subscription.updated": {
-          const sub  = event.data.object as Stripe.Subscription;
+          /* O Stripe não garante a ordem dos eventos: um "updated" antigo reenviado depois do
+             "deleted" reativaria o workspace. Vale o estado atual da assinatura (EQZ-59) */
+          const sub  = await stripe.subscriptions.retrieve((event.data.object as Stripe.Subscription).id);
           const wsId = sub.metadata?.workspace_id;
           if (!wsId || !await isCurrentSubscription(wsId, sub.id)) break;
 
@@ -286,8 +322,10 @@ const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         }
       }
     } catch (err) {
-      /* 500 faz o Stripe reenviar o evento (com intervalos, por até 3 dias) em vez de perdê-lo */
+      /* 500 faz o Stripe reenviar o evento (com intervalos, por até 3 dias) em vez de perdê-lo. Tira o
+         registro de idempotência para o reenvio processar de novo */
       fastify.log.error({ err, eventId: event.id, type: event.type }, "Erro ao processar webhook Stripe");
+      await supabaseAdmin.from("stripe_events").delete().eq("id", event.id);
       return reply.status(500).send({ error: "Falha ao processar o evento" });
     }
 

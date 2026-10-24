@@ -156,7 +156,21 @@ cron.schedule("15 4 * * *", () => runDiagnosticoNfce());
 try {
   await fastify.listen({ port: PORT, host: "0.0.0.0" });
   /* Só em produção: o .env local aponta para o mesmo banco */
-  if (process.env.NODE_ENV === "production") { runCleanupJob("inicio"); runDiagnosticoNfce(); }
+  if (process.env.NODE_ENV === "production") {
+    /* Segredos que faltam (EQZ-55): as rotas já recusam sem eles; aqui o aviso aparece no log do deploy.
+       Não derruba a API: sem o webhook só a ativação de pagamento para, o resto do app segue */
+    if (!process.env.STRIPE_WEBHOOK_SECRET?.startsWith("whsec_")) {
+      fastify.log.error("STRIPE_WEBHOOK_SECRET ausente ou inválida: o webhook do Stripe vai responder 503");
+    }
+    if (!process.env.STRIPE_PORTAL_CONFIG_GERAL) {
+      fastify.log.warn("STRIPE_PORTAL_CONFIG_GERAL ausente: o portal do Stripe vai deixar trocar de plano sem a checagem de uso");
+    }
+    if ((process.env.CRON_SECRET ?? "").length < 32) {
+      fastify.log.warn("CRON_SECRET com menos de 32 caracteres: troque por um segredo longo (/admin/*)");
+    }
+    runCleanupJob("inicio");
+    runDiagnosticoNfce();
+  }
   console.log(`\n🚀 Estoquizen API rodando em http://localhost:${PORT}`);
   console.log(`📄 Documentação:          http://localhost:${PORT}/docs\n`);
 } catch (err) {
