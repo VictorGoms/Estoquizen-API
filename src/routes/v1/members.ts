@@ -37,10 +37,18 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
       (profileRows ?? []).forEach((p) => profileMap.set(p.id, p));
     }
 
-    const data = (memberRows ?? []).map((row) => ({
-      ...row,
-      profiles: profileMap.get(row.user_id) ?? null,
-    }));
+    /* Convite pendente não revela o perfil de quem foi convidado (EQZ-54): quem convida já sabe o
+       e-mail; nome, telefone e foto só aparecem depois que a pessoa aceita. Antes, convidar o e-mail
+       de qualquer conta mostrava o nome e o telefone dela */
+    const data = (memberRows ?? []).map((row) => {
+      const perfil = profileMap.get(row.user_id) ?? null;
+      return {
+        ...row,
+        profiles: row.status === "pendente" && perfil
+          ? { id: perfil.id, email: perfil.email, name: null, phone: null, avatar_color: null, avatar_url: null }
+          : perfil,
+      };
+    });
 
     return reply.send(ok(data));
   });
@@ -126,7 +134,9 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     const siteUrl = (process.env.ALLOWED_ORIGINS ?? "https://estoquizen.vercel.app").split(",")[0].trim();
-    const redirectTo = `${siteUrl}/auth/callback`;
+    /* O link diz qual convite aceitar (EQZ-56): antes o /set-password usava o workspace_id do
+       user_metadata, que o convite de outra empresa reescreve, e aceitava o convite errado */
+    const redirectTo = `${siteUrl}/auth/callback?workspace_id=${workspace_id}`;
     /* workspace_name aparece no e-mail de convite ({{ .Data.workspace_name }} no modelo do Supabase) */
     const metadata   = { name, workspace_id, workspace_name: ws?.name ?? null, role, from_invite: true };
     const emailFailed = (err: unknown, msg: string) => {
@@ -154,8 +164,8 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
 
       if (!authUser?.email_confirmed_at) {
         /* Nunca confirmou: reenvia o convite sem apagar a conta (apagar levava junto os convites
-           pendentes dela em outros workspaces). O metadata aponta para este convite, que é o que
-           o /set-password aceita. */
+           pendentes dela em outros workspaces). O metadata só dá o nome do workspace ao e-mail do
+           Supabase ({{ .Data.workspace_name }}); qual convite aceitar vem do link (EQZ-56). */
         await supabaseAdmin.auth.admin.updateUserById(userId, {
           user_metadata: { ...(authUser?.user_metadata ?? {}), ...metadata },
         });
@@ -293,24 +303,16 @@ const membersRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (!membership) return reply.status(404).send(fail("Convite pendente não encontrado"));
 
-    /* Verifica se o usuário nunca fez login (nunca ativou a conta) */
-    const { data: { user: invitedUser } } = await supabaseAdmin.auth.admin.getUserById(id);
-    const neverLoggedIn = !invitedUser?.last_sign_in_at;
+    /* Só tira o convite deste workspace (EQZ-56). Antes, se a pessoa nunca tinha logado, a conta
+       inteira era apagada: qualquer empresa convidava o e-mail de quem estava com convite pendente
+       em outra, revogava e apagava a conta e os convites dela */
+    const { error: delErr } = await supabaseAdmin
+      .from("workspace_members")
+      .delete()
+      .eq("id", membership.id);
+    if (delErr) return sendDbError(req, reply, delErr);
 
-    if (neverLoggedIn) {
-      /* Deleta a conta — cascata remove workspace_members automaticamente */
-      const { error: delErr } = await supabaseAdmin.auth.admin.deleteUser(id);
-      if (delErr) return sendDbError(req, reply, delErr);
-    } else {
-      /* Usuário já tem conta ativa — remove só do workspace */
-      const { error: delErr } = await supabaseAdmin
-        .from("workspace_members")
-        .delete()
-        .eq("id", membership.id);
-      if (delErr) return sendDbError(req, reply, delErr);
-    }
-
-    return reply.send(ok({ revoked: true, accountDeleted: neverLoggedIn }));
+    return reply.send(ok({ revoked: true, accountDeleted: false }));
   });
 
   /* DELETE /members/:id — remove do workspace */
