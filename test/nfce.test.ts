@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseItens, lerItensDaPagina, linkDoQrValido, PORTAIS, ESTADO_NOME } from "../src/lib/nfce.js";
+import { parseItens, lerItensDaPagina, linkDoQrValido, ehPortalOficial, PORTAIS, ESTADO_NOME } from "../src/lib/nfce.js";
 import { chaveDeTeste, chaveValida } from "../src/lib/nfeChave.js";
 
 /* Tabela de itens da página do DANFE da SEFAZ-BA (cupom real de 2026-09, só a parte dos produtos).
@@ -79,5 +79,18 @@ describe("diagnóstico dos 27 estados", () => {
       expect(k.slice(2, 6)).toBe("2610");
       expect(k.slice(20, 22)).toBe("65");
     }
+  });
+});
+
+describe("portal oficial da SEFAZ (catálogo e cache, run-2 da auditoria)", () => {
+  it("reconhece os portais da lista pelo endereço, sem diferenciar maiúscula", () => {
+    expect(ehPortalOficial(new URL("https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=1"))).toBe(true);
+    expect(ehPortalOficial(new URL("http://NFE.SEFAZ.BA.GOV.BR/servicos/nfce/Modulos/Geral/NFCEC_consulta_danfe.aspx"))).toBe(true);
+  });
+
+  it("outro site .gov.br aceito pelo link do QR não é portal oficial", () => {
+    expect(ehPortalOficial(new URL("https://prefeitura-qualquer.gov.br/arquivo.html"))).toBe(false);
+    expect(ehPortalOficial(new URL("https://www.nfce.fazenda.sp.gov.br.evil.com/"))).toBe(false);
+    expect(ehPortalOficial(new URL("https://falso-sefaz.ba.gov.br/"))).toBe(false);
   });
 });

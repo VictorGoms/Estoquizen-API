@@ -105,11 +105,12 @@ const nfeRoutes: FastifyPluginAsync = async (fastify) => {
 
     try {
       if (tipo === "nfce") {
-        const itens = await consultarNfce(chave, qr_url);
+        const { itens, oficial } = await consultarNfce(chave, qr_url);
         if (itens.length === 0) {
           return reply.status(404).send(fail("Nenhum item encontrado. Verifique a chave e tente novamente."));
         }
-        void guardarNoCatalogo(itens, chave.slice(0, 2), req.log);
+        /* Só o que veio de portal oficial da SEFAZ: o link do QR aceita qualquer .gov.br */
+        if (oficial) void guardarNoCatalogo(itens, chave.slice(0, 2), req.log);
         return reply.send(ok({ chave, total_itens: itens.length, itens }));
       }
     } catch (err) {

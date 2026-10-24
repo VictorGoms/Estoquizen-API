@@ -22,6 +22,12 @@ export interface NfceItem {
 const CACHE_TTL = 24 * 60 * 60 * 1000; // 24h em ms
 const cache = new Map<string, { itens: NfceItem[]; expiresAt: number }>();
 
+/** Itens da nota e se vieram de um portal oficial da SEFAZ (só esses entram no catálogo) */
+export interface ResultadoNfce {
+  itens:   NfceItem[];
+  oficial: boolean;
+}
+
 function cacheGet(chave: string): NfceItem[] | null {
   const entry = cache.get(chave);
   if (!entry) return null;
@@ -68,6 +74,14 @@ const QR_PRODUCAO: Record<string, string> = {
   "52": "https://nfeweb.sefaz.go.gov.br/nfeweb/sites/nfce/danfeNFCe",                // GO
   "53": "http://www.fazenda.df.gov.br/nfce/qrcode",                                  // DF
 };
+
+/* Portais da SEFAZ de verdade (os 27 de QR_PRODUCAO). O link do QR pode ser de qualquer .gov.br (são
+   milhares de sites de governo), e o primeiro endereço que responder vence a consulta: só o que veio de
+   um destes, conferido no endereço final depois dos redirecionamentos, entra no catálogo de códigos e no
+   cache (run-2 da auditoria de segurança, 2026-10-24) */
+const HOSTS_OFICIAIS = new Set(Object.values(QR_PRODUCAO).map((u) => new URL(u).hostname.toLowerCase()));
+
+export const ehPortalOficial = (u: URL) => HOSTS_OFICIAIS.has(u.hostname.toLowerCase());
 
 /** Endereços tentados (em paralelo) para a chave digitada, por UF */
 export const PORTAIS: Record<string, (chave: string) => string[]> = Object.fromEntries(
@@ -311,7 +325,7 @@ export function lerItensDaPagina(html: string, url?: URL): NfceItem[] {
 
 const fetchItens = async (url: URL, cUF: string) => {
   const p = await buscarPaginaDoEstado(url, cUF);
-  return lerItensDaPagina(p.html, p.url);
+  return { itens: lerItensDaPagina(p.html, p.url), oficial: ehPortalOficial(p.url) };
 };
 
 export interface Sondagem {
@@ -338,10 +352,10 @@ export async function sondarPortal(url: URL, cUF: string): Promise<Sondagem> {
   }
 }
 
-export async function consultarNfce(chave: string, qrUrl?: string): Promise<NfceItem[]> {
-  /* Cache hit — retorna instantâneo */
+export async function consultarNfce(chave: string, qrUrl?: string): Promise<ResultadoNfce> {
+  /* Cache hit — retorna instantâneo (no cache só entra o que veio de portal oficial) */
   const cached = cacheGet(chave);
-  if (cached) return cached;
+  if (cached) return { itens: cached, oficial: true };
 
   const estadoCod = chave.slice(0, 2);
   const uf        = ESTADO_NOME[estadoCod];
@@ -361,12 +375,12 @@ export async function consultarNfce(chave: string, qrUrl?: string): Promise<Nfce
 
   /* Dispara todas as URLs em paralelo — vence a primeira que responder */
   try {
-    const lidos = await Promise.any(urls.map((url) => fetchItens(url, estadoCod)));
+    const lido = await Promise.any(urls.map((url) => fetchItens(url, estadoCod)));
     /* Código interno do fornecedor ganha a raiz do CNPJ do emitente (está na chave) */
     const raiz  = cnpjRaizDaChave(chave);
-    const itens = lidos.map((i) => ({ ...i, codigo: codigoDoItem(i.codigo, raiz) }));
-    cacheSet(chave, itens);
-    return itens;
+    const itens = lido.itens.map((i) => ({ ...i, codigo: codigoDoItem(i.codigo, raiz) }));
+    if (lido.oficial) cacheSet(chave, itens);
+    return { itens, oficial: lido.oficial };
   } catch (err) {
     /* AggregateError quando todas falharam. O detalhe técnico vai só para o log
        (antes a pessoa via "HTML sem itens | HTML sem itens | HTML sem itens") */
