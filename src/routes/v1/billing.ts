@@ -244,11 +244,18 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
 
     const siteUrl = (process.env.ALLOWED_ORIGINS ?? "https://estoquizen.vercel.app").split(",")[0].trim();
 
+    /* Portal só de cartão e faturas (EQZ-57): o padrão deixa trocar de plano, e descer por ali pulava
+       a checagem de uso do /billing/checkout (ficava com 2000 produtos pagando o Basic). A troca de
+       plano continua pelo /billing/checkout, que usa o portal padrão já com o plano escolhido */
+    const configuration = process.env.STRIPE_PORTAL_CONFIG_GERAL;
+    if (!configuration) req.log.warn("STRIPE_PORTAL_CONFIG_GERAL ausente: portal aberto com a configuração padrão (permite trocar de plano)");
+
     try {
       const session = await stripe.billingPortal.sessions.create({
         customer:   sub.stripe_customer_id,
         locale:     "pt-BR",
         return_url: `${siteUrl}/configuracoes`,
+        ...(configuration ? { configuration } : {}),
       });
       return reply.send(ok({ url: session.url }));
     } catch (err) {
@@ -425,6 +432,24 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(502).send(fail("Não foi possível desistir agora. Tente novamente."));
     }
 
+    /* Reserva a desistência ANTES de devolver (EQZ-58): os índices únicos de desistencias param aqui um
+       segundo pedido ao mesmo tempo (outra empresa paga da mesma pessoa), que antes passava junto pela
+       conferência acima. Se algo falhar antes do fim, a reserva sai e a pessoa pode tentar de novo */
+    const { data: reserva, error: erroReserva } = await supabaseAdmin
+      .from("desistencias")
+      .insert({ user_id: req.user.id, cpf_hash: cpfHash, workspace_id, stripe_subscription_id: sub.stripe_subscription_id })
+      .select("id")
+      .single();
+    if (erroReserva?.code === "23505") return reply.status(409).send(fail(JA_DESISTIU));
+    if (erroReserva || !reserva) {
+      req.log.error({ err: erroReserva, workspace_id }, "falha ao reservar a desistência");
+      return reply.status(502).send(fail("Não foi possível desistir agora. Tente novamente."));
+    }
+    const desfazerReserva = async () => {
+      const { error } = await supabaseAdmin.from("desistencias").delete().eq("id", reserva.id);
+      if (error) req.log.error({ err: error, workspace_id }, "a reserva da desistência ficou: a pessoa vai pelo contato@");
+    };
+
     /* 1) Devolve cada pagamento das faturas. Sem PaymentIntent ou recusado pelo Stripe: à mão */
     let devolvido = 0;
     const manuais: { fatura: string; valor: number; motivo: string }[] = [];
@@ -452,6 +477,7 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
       }
     } catch (err) {
       req.log.error({ err, workspace_id, devolvido }, "falha ao devolver os pagamentos da desistência");
+      await desfazerReserva();
       return reply.status(502).send(fail("Não foi possível concluir a devolução. Tente novamente: o que já foi devolvido não é cobrado de novo."));
     }
 
@@ -464,6 +490,7 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
     } catch (err) {
       if (!stripeMissing(err)) {
         req.log.error({ err, workspace_id, devolvido }, "devolveu, mas não cancelou a assinatura no Stripe");
+        await desfazerReserva();
         return reply.status(502).send(fail("O valor foi devolvido, mas não deu para encerrar a assinatura. Tente de novo em instantes."));
       }
     }
@@ -479,13 +506,10 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
       .eq("workspace_id", workspace_id);
     if (error) req.log.error({ err: error, workspace_id }, "desistência feita no Stripe, mas não gravou no banco (o webhook acerta)");
 
-    /* 4) Registra para a regra de 1 vez por pessoa. Só depois de cancelar: se o cancelamento falhar,
-       a pessoa tenta de novo sem esbarrar na regra */
+    /* 4) Completa a reserva com os valores (a regra de 1 vez por pessoa já vale desde a reserva) */
     const manual = manuais.reduce((soma, m) => soma + m.valor, 0);
-    const { error: erroRegistro } = await supabaseAdmin.from("desistencias").insert({
-      user_id: req.user.id, cpf_hash: cpfHash, workspace_id, stripe_subscription_id: sub.stripe_subscription_id, devolvido, manual,
-    });
-    if (erroRegistro) req.log.error({ err: erroRegistro, workspace_id }, "desistência feita, mas não gravou em desistencias (a regra de 1 vez não vai valer para ela)");
+    const { error: erroRegistro } = await supabaseAdmin.from("desistencias").update({ devolvido, manual }).eq("id", reserva.id);
+    if (erroRegistro) req.log.error({ err: erroRegistro, workspace_id, devolvido, manual }, "desistência feita, mas os valores não gravaram em desistencias");
 
     /* 5) E-mails: confirmação ao dono (o decreto pede confirmação imediata) e, se faltou devolver
        algo, aviso ao contato@. Falha no e-mail só vai para o log: a desistência já valeu */
