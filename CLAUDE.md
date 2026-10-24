@@ -61,6 +61,8 @@ database/
 
 ## Testes
 - `npm test` (Vitest): regras puras em `test/*.test.ts` (sanitize, chave da NF-e, planos, layout dos e-mails, schemas Zod). Ficam fora de `src/` para o `tsc` do build não compilá-los
+- Testes de rota (auditoria de segurança de 2026-10-23): `test/apoio/supabaseFalso.ts` troca o Supabase por um falso que registra cada consulta (`falso.em(tabela, op)`) e responde o que o teste mandar; `montarApp(rotas)` monta o Fastify com o mesmo auth e o mesmo leitor de JSON do `server.ts` e `comoUsuario(id)` dá o header. Stripe e Resend são simulados com `vi.spyOn`/`vi.mock`: nenhum teste usa a rede. Exemplos: `members`, `webhook`, `billing`, `limites`, `admin`, `catalogoRota`
+- `supabase/tests/conferir_seguranca.sql`: conferência **só de leitura** do banco (RLS, GRANTs, funções SECURITY DEFINER, travas, Storage e convite pendente). Roda no SQL Editor ou pelo MCP e termina sempre com um erro de propósito (`CONFERENCIA OK` ou `CONFERENCIA FALHOU: ...`). Rodar depois de toda migração que mexa em GRANT, policy, função ou Storage
 - CI do GitHub (`.github/workflows/ci.yml`): tipos e testes em cada push; o deploy continua no Railway
 
 ## Padrões obrigatórios
@@ -74,6 +76,8 @@ database/
 - O supabase-js e o SDK do Resend **não lançam exceção**: devolvem `{ error }`. Sempre checar o `error`
 - Erros não tratados e rota inexistente já saem como `{ data: null, error }` em português (setErrorHandler/setNotFoundHandler no server.ts)
 - **O banco aplica as regras também para quem chama o Supabase direto (SCRUM-48).** O cliente (`authenticated`) não grava `qty`, `movements`, `nota_imports`, `workspaces.plan` nem insere membros; só as colunas liberadas por GRANT (produto: dados cadastrais; workspace: nome/descrição; perfil: nome/telefone/foto; membro: papel/status). Toda escrita exige `workspace_is_writable()` (mesma regra do `assertActiveSubscription`). Coluna nova que o cliente precise gravar = GRANT novo numa migração
+- **GRANTs mínimos (EQZ-54 e 59, 2026-10-24):** o cliente lê `profiles` só pelas colunas sem `cpf`, e só de colegas **ativos** (convite pendente não revela o perfil); `anon` não lê tabela nenhuma; tabela que só a API usa (sem policy) fica sem GRANT para `anon`/`authenticated`. Tabela nova: o Supabase dá GRANT de tudo por padrão, então revogue na migração o que o cliente não usa
+- **Lista no corpo:** confira o tamanho com `listaGrandeDemais` antes do zod (EQZ-59). O zod 3 valida item por item mesmo passando do `.max()`: 1 milhão de itens vazios em 3 MB viravam +600 MB de memória
 
 ## Auth flow
 1. Cliente faz login via Supabase Auth (frontend/mobile)
@@ -104,7 +108,7 @@ mínimo, compartilhados pela equipe (qualquer membro ativo; gravar exige assinat
 - `DELETE /shopping-list/:id?workspace_id=` — tira da lista
 
 ### Catálogo de códigos de barras — `src/routes/v1/catalogo.ts` (EQZ-53, 2026-10-23)
-- `GET /catalogo/:codigo` — nome sugerido para um GTIN quando as bases abertas (Open Food Facts e irmãs, consultadas pelo front) não conhecem: `{ nome, fonte: "nota" | "empresas" }` ou `null`. Lê `products` e `nota_imports.itens` de todos os workspaces, mas só devolve o nome. Regra em `src/lib/catalogo.ts` (pedido do João: nome de teste não pode vazar): vale o nome de **nota fiscal** (descrição do fornecedor; a revisão da nota não deixa editar) ou o nome **digitado igual por 2 donos diferentes** (sem maiúscula/acento/espaço). Nunca preço, quantidade, fornecedor ou empresa. Termos (seção 8) e Política (seção 3) avisam
+- `GET /catalogo/:codigo` — nome sugerido para um GTIN quando as bases abertas (Open Food Facts e irmãs, consultadas pelo front) não conhecem: `{ nome, fonte: "nota" | "empresas" }` ou `null`. Lê `products` e `catalogo_sefaz` de todos os workspaces, mas só devolve o nome. Regra em `src/lib/catalogo.ts` (pedido do João: nome de teste não pode vazar): vale o nome que **a própria API leu da SEFAZ** em `/nfe/consultar` (tabela `catalogo_sefaz`: GTIN + descrição + estado, gravada pelo servidor, EQZ-60) ou o nome **digitado igual por 2 donos diferentes**. XML e item digitado na revisão contam como digitados: vêm do navegador. **Até 2026-10-24 o catálogo nunca funcionou:** procurava em `nota_imports.itens`, que é a quantidade de itens (integer) (sem maiúscula/acento/espaço). Nunca preço, quantidade, fornecedor ou empresa. Termos (seção 8) e Política (seção 3) avisam
 
 ### Workspaces — `src/routes/v1/workspaces.ts`
 - `GET  /workspaces` — workspaces do usuário autenticado (via RLS)
@@ -125,7 +129,7 @@ mínimo, compartilhados pela equipe (qualquer membro ativo; gravar exige assinat
   - Limite diário conta os e-mails enviados na tabela `invite_log` (basic=10, growth=25, pro=50), inclusive reenvios e convites revogados
 - `POST /members/accept` — usuário autenticado aceita convite pendente (`{ workspace_id }` → status=ativo)
 - `PATCH /members/:id?workspace_id=xxx` — atualiza role/status/perfil só naquele workspace (owner/admin; regras de owner na trigger `protect_workspace_owner`)
-- `DELETE /members/:id/invite?workspace_id=xxx` — revoga convite pendente; se nunca logou, deleta a conta também
+- `DELETE /members/:id/invite?workspace_id=xxx` — revoga convite pendente: tira só a linha deste workspace. Até 2026-10-24 apagava a conta de quem nunca logou, e qualquer empresa apagava assim a conta e os convites de outra (EQZ-56)
 - `DELETE /members/:id?workspace_id=xxx` — remove membro ativo do workspace
 
 ### NFC-e — `src/routes/v1/nfe.ts`
@@ -138,7 +142,7 @@ mínimo, compartilhados pela equipe (qualquer membro ativo; gravar exige assinat
   - **Monitoramento (`src/lib/nfceMonitor.ts`, 2026-10-23):** toda falha de leitura vai para `nfce_falhas` (estado, chave, link do QR, erro técnico; nunca o HTML, que pode ter o CPF do consumidor) e manda e-mail ao contato@ no máximo 1 vez por estado a cada 24 h. O **diagnóstico semanal** testa o portal de cada UF a partir do servidor com `chaveDeTeste` (chave válida que não é de nota nenhuma) e grava em `nfce_diagnostico` (ok/captcha/erro + trecho da página); estado que passou a dar erro manda e-mail. Roda na subida e no cron das 4h15 UTC, de verdade só a cada 7 dias; `POST /admin/nfce-diagnostico` (CRON_SECRET) força. Falhas com mais de 90 dias são apagadas
   - **Ponte no Brasil (2026-10-23):** a API roda nos EUA e ES, MA, RO, TO, PA e SE recusam conexão de fora do Brasil. A Edge Function `supabase/functions/nfce-ponte` (deploy pelo MCP, `verify_jwt` desligado) roda em São Paulo (`x-region: sa-east-1`) e faz **um** pedido ao portal; cookies, redirecionamentos e leitura continuam em `buscarPagina`. Só aceita no header `apikey` uma secret key do projeto (a `SUPABASE_SERVICE_ROLE_KEY` da API, conferida contra `SUPABASE_SECRET_KEYS`) e só abre `.gov.br`. Os 6 estados (`PONTE_PRIMEIRO`) vão direto pela ponte; nos outros ela entra quando a conexão direta falha. Rodou pela ponte → o diagnóstico mostra "(pela ponte no Brasil)"
   - Resultado de 2026-10-23 (feito do Brasil): abrem AL, AM, CE, ES, GO, MS, PB, PE, PR, RJ, RS e SP; pedem captcha na chave digitada AC, BA (com chave real abre), DF, MA, MG, RO e SC (nesses, só o QR completo); erro em AP e RN (certificado do estado), MT e TO (400), PA (conexão cortada), PI (endereço interno do estado), RR (404) e SE (lento)
-- **Quando a leitura falha (EQZ-34, 2026-10-23):** o front oferece ler o QR, digitar os itens (tela de revisão com "Adicionar item") ou enviar o XML. Item digitado vai com `manual: true`, que fica em `nota_imports.itens`; o catálogo de códigos (EQZ-53) trata esse nome como digitado, não como descrição de nota
+- **Quando a leitura falha (EQZ-34, 2026-10-23):** o front oferece ler o QR, digitar os itens (tela de revisão com "Adicionar item") ou enviar o XML. Item digitado vai com `manual: true`, mas o zod descarta e nada disso é guardado (`nota_imports.itens` é só a quantidade de itens; corrigido em 2026-10-24, este texto dizia o contrário). O catálogo de códigos não usa item de `/nfe/importar` (EQZ-60)
 - `POST /nfe/importar` — `{ workspace_id, tipo, chave, itens[] }` (item com `product_id` soma no existente; sem, cria). Owner/admin, assinatura ativa, limite de produtos do plano. RPC `import_nota_fiscal` faz tudo numa transação e recusa a mesma chave no workspace (409 com a data da importação anterior)
 
 ## Planos — `src/lib/plans.ts`
@@ -158,7 +162,9 @@ O slug `intermediate` foi renomeado para `growth` — constraint e dados já atu
 - `products`          — id, workspace_id, name, code (NOT NULL), category, unit, price, cost (custo de compra, opcional; a nota preenche), qty, min_qty, max_qty, location, supplier, image_url (foto da pessoa ou da embalagem no Open Food Facts), icon (EQZ-30: ícone escolhido à mão ou `nenhum`; null = automático pelo nome, no front), nota_fiscal, created_by, created_at, updated_at
 - `movements`         — id, product_id, delta, reason (texto livre), motivo (saída: venda/perda/vencido/furto/uso_interno/devolucao/ajuste_contagem; null na entrada), created_by, created_at
 - `subscriptions`     — id, workspace_id, plan, status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_customer_id, stripe_subscription_id, stripe_price_id, created_at, updated_at, expired_at, warned_at, final_warned_at, confirmation_email_sub_id, trial_recap_sent_at / trial_last_day_sent_at / trial_ended_sent_at (EQZ-05: envio de cada e-mail do trial), paused_until (quando o Stripe volta a cobrar) / pause_starts_at / pause_ends_at (período bloqueado) / last_paused_at / pause_reminder_sent_at (EQZ-07: pausa)
-- `nota_imports`      — notas importadas: workspace_id, chave (única por workspace), tipo, itens, imported_by, created_at
+- `nota_imports`      — notas importadas: workspace_id, chave (única por workspace), tipo, itens (**integer**: a quantidade de itens, não a lista), imported_by, created_at
+- `catalogo_sefaz`    — catálogo de códigos (EQZ-60): codigo (GTIN), nome (como a SEFAZ mostrou), uf (código do estado), visto_em; PK (codigo, nome). Gravada por `/nfe/consultar`. Sem GRANT para o cliente
+- `stripe_events`     — ids dos eventos do Stripe já processados (EQZ-59), para não refazer um reenvio. Sem GRANT para o cliente
 - `trial_grants`      — trials concedidos: user_id (único), cpf_hash SHA-256 (único), workspace_id, granted_at. RLS sem policies: só a API acessa
 - `stock_counts`      — contagens do dia (workspace_id, product_id, counted_by, expected_qty, counted_qty, created_at). Membros leem; só a RPC grava
 - `shopping_list_items` — lista de compras à mão: workspace_id, product_id (único por workspace), qty, added_by, created_at. Membros leem pela RLS; gravar só pela API
@@ -182,7 +188,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS profiles_cpf_unique ON public.profiles (cpf) W
 
 ### RPCs (funções Postgres)
 - `adjust_product_qty(p_product_id, p_delta, p_motivo, p_reason, p_user_id)` — ajuste atômico de estoque + insert em movements com o motivo (EQZ-23; o autor é `auth.uid()`). SECURITY DEFINER: checa membro e `workspace_is_writable` por dentro. A versão antiga sem `p_motivo` continua (o estoque inicial do cadastro usa); como `p_motivo` não tem padrão, não há ambiguidade entre as duas
-- `accept_workspace_invite()` — chamada pelo frontend em `/set-password` após definir senha; ativa só um convite **pendente que já existe** (o papel vem do convite, nunca do user_metadata); não aceita anon
+- `accept_workspace_invite(p_workspace_id)` — chamada pelo frontend em `/set-password` após definir senha, com o `workspace_id` do link do convite (`/auth/callback?workspace_id=`); ativa só um convite **pendente que já existe** desse workspace (o papel vem do convite); não aceita anon. A versão sem parâmetro lia o workspace do user_metadata, que o convite de outra empresa reescreve (EQZ-56): sai na migração `20261025120000`, a aplicar 24 h depois do front novo
+- Trigger `protect_invite_acceptance` (BEFORE UPDATE OF status em `workspace_members`, EQZ-56): só a própria pessoa tira o convite dela de `pendente`; o service role passa
 - `import_nota_fiscal(p_workspace_id, p_chave, p_tipo, p_itens jsonb)` — importação de nota numa transação (ver `/nfe/importar`). SECURITY DEFINER: checa owner/admin e `workspace_is_writable` por dentro
 - `workspace_is_writable(ws)` — a assinatura permite escrita? (trial válido, ativo, past_due ou legado sem assinatura, e fora do período de uma pausa; só responde para membros). Usada nas policies de escrita
 - `storage_workspace_writable(nome)` — a 1ª pasta do arquivo em `product-images` é um workspace do qual a pessoa é membro e que aceita escrita. Fotos de produto ficam em `<workspace_id>/...`
@@ -292,7 +299,8 @@ As variáveis `SMTP_*` não são mais usadas (o `mailer.ts` foi removido).
 ### Modelo de trial
 - **Todos os planos têm teste grátis de 30 dias** (`DIAS_TESTE` em `src/lib/trial.ts`; oferta de lançamento decidida pelo João em 2026-10-21 para quem começar até 30/11/2026, Pro incluído para verem o histórico por funcionário). Antes: Basic e Growth com 14 dias e Pro pago na hora. Em 01/12 o João decide se volta para 14 (mudar a constante aqui e `src/lib/teste.ts` no front). `POST /workspaces` devolve `trial: true|false`; sem trial (já usou), o front abre o pagamento na hora
 - Trial é **1 por pessoa e 1 por CPF** — a API tenta inserir em `trial_grants` (índices únicos em user_id e no hash do CPF); se der conflito, cria sem trial. CPF de outra conta também fica sem trial
-- CPF é **obrigatório** para todos os planos e validado antes de criar o workspace; salvo em `profiles.cpf` (só na primeira vez — não sobrescreve)
+- CPF é **obrigatório** para todos os planos e validado antes de criar o workspace; salvo em `profiles.cpf` (só na primeira vez — não sobrescreve). O cliente não lê essa coluna (EQZ-54)
+- **Limite conhecido (decisão de 2026-10-24, EQZ-58):** o CPF não é verificado contra o nome. Quem gera CPFs válidos ganha um teste por conta nova, e quem cadastra primeiro o CPF de outra pessoa tira o teste dela. Aceito enquanto não houver pagantes; quando houver, pensar em cartão no teste ou checagem CPF×nome
 - Workspace **sem** linha em `subscriptions` criado a partir de 2026-10-01 é bloqueado por `assertActiveSubscription`; os de antes do sistema de assinaturas (ex.: "Assai Atacadista") seguem liberados
 - O Stripe **não é criado durante o trial** — a assinatura é puramente local no banco
 - O Stripe só entra quando o usuário decide pagar
@@ -365,7 +373,7 @@ Price metadata: { plan: "growth", interval: "monthly" }
 ```
 GET  /billing/subscription      — estado da assinatura (qualquer membro)
 POST /billing/checkout          — cria Stripe Checkout Session (só owner); { embutido: true } → pagamento dentro do app (ui_mode embedded_page, redirect só se o meio de pagamento exigir) e devolve client_secret; sem, devolve a url da página do Stripe
-POST /billing/portal            — Customer Portal do Stripe (só owner): cartão, faturas e troca de plano; cancelar está desligado no portal
+POST /billing/portal            — Customer Portal do Stripe (só owner): cartão e faturas, com a configuração `STRIPE_PORTAL_CONFIG_GERAL` (sem troca de plano, EQZ-57: descer por ali pulava a checagem de uso). Troca de plano é pelo /billing/checkout
 POST /billing/cancel            — cancela no fim do ciclo, direto no app (só owner); desfaz uma pausa agendada
 POST /billing/uncancel          — desfaz o cancelamento agendado (só owner)
 POST /billing/cancel-feedback   — resposta da pergunta do cancelamento { motivo, detalhe?, acao } (só owner, EQZ-07)
@@ -392,7 +400,7 @@ e-mail "Cancelamento agendado"; `POST /billing/uncancel` desfaz (se o portal ant
 O cancelamento foi **desligado no portal do Stripe** (configuração `bpc_1TOWPmExaBJWRM4TGEnk8OLJ`, modo de teste) para ninguém
 pular a pergunta; o portal fica para cartão, faturas e troca de plano. **No modo real, repetir: desligar "Cancelar" no portal.**
 Não existe `/billing/upgrade`: a troca de plano é pelo `/billing/checkout` (ver abaixo).
-**Desistência em 7 dias (EQZ-50, 2026-10-23; CDC art. 49 e Decreto 7.962, art. 5º):** prazo contado do 1º pagamento **da assinatura** (`prazoDaDesistencia` em `src/lib/desistencia.ts`; assinatura nova tem prazo novo, como dizem os Termos). `POST /billing/desistir` lista as faturas pagas da assinatura, devolve cada pagamento (`invoicePayments.list` → `refunds.create` pelo PaymentIntent; `charge_already_refunded` conta como devolvido, então repetir é seguro), cancela na hora (`subscriptions.cancel`, sem acerto) e grava `canceled` (o webhook grava o mesmo depois). E-mail "Desistência confirmada" ao dono. **Boleto não tem estorno no Stripe:** o que não puder ser devolvido vai para `sendManualRefundEmail` (contato@) e o cliente é avisado de que a devolução é combinada por Pix. Não pede motivo (o decreto quer meio simples). **Pelo app, 1 vez por pessoa** (decisão do João, 2026-10-23: assinar e desistir em sequência custaria a tarifa do Stripe a cada vez): `desistiuAntes` confere `desistencias` pelo usuário e pelo CPF codificado; da 2ª em diante o GET devolve `pelo_contato` e o POST responde 409 com o contato@. Sem conseguir conferir, vai pelo contato@. O registro é gravado só depois de cancelar. Na tela: `components/configuracoes/Desistencia.tsx` do front, só no prazo.
+**Desistência em 7 dias (EQZ-50, 2026-10-23; CDC art. 49 e Decreto 7.962, art. 5º):** prazo contado do 1º pagamento **da assinatura** (`prazoDaDesistencia` em `src/lib/desistencia.ts`; assinatura nova tem prazo novo, como dizem os Termos). `POST /billing/desistir` lista as faturas pagas da assinatura, devolve cada pagamento (`invoicePayments.list` → `refunds.create` pelo PaymentIntent; `charge_already_refunded` conta como devolvido, então repetir é seguro), cancela na hora (`subscriptions.cancel`, sem acerto) e grava `canceled` (o webhook grava o mesmo depois). E-mail "Desistência confirmada" ao dono. **Boleto não tem estorno no Stripe:** o que não puder ser devolvido vai para `sendManualRefundEmail` (contato@) e o cliente é avisado de que a devolução é combinada por Pix. Não pede motivo (o decreto quer meio simples). **Pelo app, 1 vez por pessoa** (decisão do João, 2026-10-23: assinar e desistir em sequência custaria a tarifa do Stripe a cada vez): `desistiuAntes` confere `desistencias` pelo usuário e pelo CPF codificado; da 2ª em diante o GET devolve `pelo_contato` e o POST responde 409 com o contato@. Sem conseguir conferir, vai pelo contato@. O registro é uma **reserva gravada antes de estornar** (índices únicos em `user_id` e `cpf_hash`, EQZ-58: dois pedidos ao mesmo tempo passavam juntos); se o estorno ou o cancelamento falha, a reserva sai e dá para tentar de novo. Na tela: `components/configuracoes/Desistencia.tsx` do front, só no prazo.
 Cancelar a assinatura (fim do ciclo, dados ficam) e excluir o workspace (`DELETE /workspaces/:id`, apaga tudo e cancela na hora) são ações separadas no front (SCRUM-63).
 **Troca de plano (SCRUM-47 parte 2):** quem já assina (`active`/`past_due` com `stripe_subscription_id`) e pede outro plano
 em `/billing/checkout` não ganha uma segunda assinatura: recebe um link do portal com `subscription_update_confirm`
@@ -405,6 +413,9 @@ Sem isso, quem desce de plano continuaria usando o que passou do limite pagando 
 **CRÍTICO no webhook:**
 - Rota `/webhooks/stripe` **NÃO tem** `preHandler: [fastify.authenticate]` — o Stripe não envia JWT
 - Validar assinatura com `stripe.webhooks.constructEvent(rawBody, stripeSignatureHeader, STRIPE_WEBHOOK_SECRET)`
+- **Sem `STRIPE_WEBHOOK_SECRET` (`whsec_...`) a rota responde 503** (EQZ-55): o SDK aceita segredo vazio, e com `?? ""` qualquer um forjava um evento assinado com chave vazia (testado: ativava o Pro). Na subida em produção, a falta da variável vai para o log como erro
+- Idempotência (EQZ-59): o id do evento vai para `stripe_events` antes de processar; repetido → 200 sem refazer (nem os e-mails); falhou → apaga a linha e responde 500 para o reenvio processar
+- `customer.subscription.updated` lê a assinatura atual (`subscriptions.retrieve`): o Stripe não garante a ordem e um "updated" antigo reativava o workspace depois do "deleted". `invoice.paid` de outra assinatura só assume o workspace se a gravada não está mais valendo (`podeAssumir`)
 - O `rawBody` é capturado via `addContentTypeParser("application/json", { parseAs: "buffer" }, ...)` em `server.ts` — salvo em `(req as any).rawBody`
 - `STRIPE_WEBHOOK_SECRET` deve ser adicionada como variável no nível do **serviço** no Railway (não projeto) — se aparecer só no "raw editor JSON" mas não na lista normal, não está sendo injetada no processo
 - **Nunca ativar assinatura pela success URL do Checkout** — sempre pelo webhook
@@ -452,7 +463,7 @@ Detalhes da API `2026-03-25.dahlia` (SCRUM-46 e 47):
   6. **Pausa acabando (EQZ-07):** `pause_ends_at` entre 1 e 3 dias à frente e `pause_reminder_sent_at` vazio → avisa que a cobrança e o acesso voltam nesse dia (uma vez por pausa; pausar ou retomar zera a marca). O "Pausa agendada" sai na hora, pela rota `POST /billing/pause`
   7. **Fotos (2026-10-23):** as fotos de produto ficam no Storage (`product-images/<workspace_id>/`), fora do cascade do banco. A exclusão (passo 2 e `DELETE /workspaces/:id`) apaga a pasta com `apagarFotosDoWorkspace` (`src/lib/fotos.ts`), e cada rodada varre as pastas de workspaces que não existem mais (`apagarFotosOrfas`; só pasta com nome UUID, e para tudo se não conseguir conferir no banco)
 - Emails via **Resend** (`src/lib/resend.ts`) — HTTP, sem SMTP bloqueado no Railway
-- Endpoint manual `POST /admin/cleanup` (protegido por `CRON_SECRET`) para forçar execução
+- Endpoint manual `POST /admin/cleanup` (protegido por `CRON_SECRET`) para forçar execução. `cronAutorizado` compara em tempo constante e as rotas `/admin/*` têm limite de 5/min (EQZ-59); a subida em produção avisa se o segredo tiver menos de 32 caracteres
 
 ### Variáveis de ambiente adicionais
 ```
@@ -462,7 +473,8 @@ STRIPE_PRICE_BASIC=price_...           # ID do Price no Stripe Dashboard
 STRIPE_PRICE_GROWTH=price_...
 STRIPE_PRICE_PRO=price_...
 RESEND_API_KEY=re_...                  # Resend — emails de aviso/deleção
-CRON_SECRET=...                        # segredo para chamar POST /admin/cleanup manualmente
+CRON_SECRET=...                        # segredo para chamar POST /admin/cleanup manualmente (32+ caracteres)
+STRIPE_PORTAL_CONFIG_GERAL=bpc_...     # portal sem troca de plano (EQZ-57); teste: bpc_1UTtq1ExaBJWRM4TzAB0ZynA
 ```
 
 > **ATENÇÃO Railway**: adicionar `STRIPE_WEBHOOK_SECRET` no nível do **serviço** (aba Variables do serviço), não do projeto. Se aparecer apenas no "raw editor JSON" mas não na lista normal de variáveis, o processo não está recebendo a var.
