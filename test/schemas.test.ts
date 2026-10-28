@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import "../src/lib/zodPt.js";
 import { CancelFeedbackSchema } from "../src/schemas/billing.schema.js";
 import { CreateWorkspaceSchema, UpdateWorkspaceSchema, SEGMENTOS } from "../src/schemas/workspace.schema.js";
-import { ImportProductsSchema, CreateProductSchema } from "../src/schemas/product.schema.js";
+import { ImportProductsSchema, CreateProductSchema, AdjustBatchSchema } from "../src/schemas/product.schema.js";
 import { ShoppingItemSchema } from "../src/schemas/shopping.schema.js";
 
 const WS = "11111111-1111-4111-8111-111111111111";
@@ -60,5 +60,35 @@ describe("lista de compras (itens à mão)", () => {
     expect(ShoppingItemSchema.safeParse({ workspace_id: WS, product_id: P, qty: 0 }).success).toBe(false);
     expect(ShoppingItemSchema.safeParse({ workspace_id: WS, product_id: P, qty: -2 }).success).toBe(false);
     expect(ShoppingItemSchema.safeParse({ workspace_id: WS, product_id: "abc", qty: 2 }).success).toBe(false);
+  });
+});
+
+describe("vários produtos de uma vez (EQZ-69)", () => {
+  const P1 = "22222222-2222-4222-8222-222222222222";
+  const P2 = "33333333-3333-4333-8333-333333333333";
+  const lote = (itens: unknown[], extra = {}) => AdjustBatchSchema.safeParse({ workspace_id: WS, tipo: "saida", itens, ...extra });
+
+  it("aceita a lista e arredonda a quantidade em 3 casas", () => {
+    const r = lote([{ product_id: P1, qty: 2 }, { product_id: P2, qty: 0.12345 }], { motivo: "perda" });
+    expect(r.success).toBe(true);
+    expect(r.success && r.data.itens[1].qty).toBe(0.123);
+  });
+
+  it("recusa lista vazia, produto repetido e quantidade zero ou negativa", () => {
+    expect(lote([]).success).toBe(false);
+    expect(lote([{ product_id: P1, qty: 1 }, { product_id: P1, qty: 2 }]).success).toBe(false);
+    expect(lote([{ product_id: P1, qty: 0 }]).success).toBe(false);
+    expect(lote([{ product_id: P1, qty: -3 }]).success).toBe(false);
+  });
+
+  it("recusa tipo e motivo desconhecidos", () => {
+    expect(lote([{ product_id: P1, qty: 1 }], { tipo: "troca" }).success).toBe(false);
+    expect(lote([{ product_id: P1, qty: 1 }], { motivo: "presente" }).success).toBe(false);
+  });
+
+  it("até 300 produtos por vez", () => {
+    const muitos = Array.from({ length: 301 }, (_, i) => ({ product_id: `22222222-2222-4222-8222-${String(i).padStart(12, "0")}`, qty: 1 }));
+    expect(lote(muitos).success).toBe(false);
+    expect(lote(muitos.slice(0, 300)).success).toBe(true);
   });
 });

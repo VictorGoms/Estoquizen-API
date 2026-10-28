@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
-import { CreateProductSchema, UpdateProductSchema, AdjustQtySchema, CountSchema, ImportProductsSchema, MAX_IMPORTACAO } from "../../schemas/product.schema.js";
+import { CreateProductSchema, UpdateProductSchema, AdjustQtySchema, AdjustBatchSchema, CountSchema, ImportProductsSchema, MAX_IMPORTACAO } from "../../schemas/product.schema.js";
 import { supabaseAdmin, supabaseForUser } from "../../lib/supabase.js";
 import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { getLimits } from "../../lib/plans.js";
@@ -230,6 +230,38 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
       if (error) {
         const isNotFound = error.message.includes("não encontrado") || error.message.includes("insuficiente");
         return { status: error.message.includes("Acesso negado") ? 403 : isNotFound ? 400 : 500, corpo: fail(dbError(error)) };
+      }
+      return { status: 200, corpo: ok(data) };
+    });
+    return reply.status(status).send(corpo);
+  });
+
+  /* POST /products/adjust-batch — entrada ou saída de vários produtos de uma vez (EQZ-69), numa
+     transação só (RPC adjust_products_batch): grava tudo ou nada. Na saída, se algum produto não
+     tiver o bastante, nada é gravado e a mensagem diz quais. Qualquer membro, como no ajuste de um
+     produto. A Idempotency-Key segura o duplo envio, como em /adjust */
+  fastify.post("/products/adjust-batch", authWrite, async (req, reply) => {
+    const parsed = AdjustBatchSchema.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
+    const { workspace_id, tipo, motivo, reason, itens } = parsed.data;
+
+    if (!await requireMember(workspace_id, req.user.id, reply)) return;
+    if (!await assertActiveSubscription(workspace_id, reply)) return;
+
+    const db    = supabaseForUser(req.headers.authorization!.slice(7));
+    const chave = chaveDoHeader(req.headers["idempotency-key"]);
+    const { status, corpo } = await ajusteUmaVez(chave && `${req.user.id}:lote:${chave}`, async () => {
+      const { data, error } = await db.rpc("adjust_products_batch", {
+        p_workspace_id: workspace_id,
+        p_itens:        itens.map((i) => ({ product_id: i.product_id, delta: tipo === "saida" ? -i.qty : i.qty })),
+        p_motivo:       tipo === "saida" ? motivo ?? "venda" : null,
+        p_reason:       reason ?? (tipo === "saida" ? "Saída de vários produtos" : "Entrada de vários produtos"),
+      });
+      if (error) {
+        if (error.message.includes("Acesso negado")) return { status: 403, corpo: fail(dbError(error)) };
+        if (/insuficiente|não encontrado/i.test(error.message)) return { status: 409, corpo: fail(dbError(error)) };
+        req.log.error({ err: error, workspace_id }, "falha ao registrar o lote");
+        return { status: 500, corpo: fail(dbError(error)) };
       }
       return { status: 200, corpo: ok(data) };
     });

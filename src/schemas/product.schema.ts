@@ -43,6 +43,23 @@ export const AdjustQtySchema = z.object({
   motivo: z.enum(MOTIVOS_SAIDA).optional(),
 });
 
+/* Entrada ou saída de vários produtos de uma vez (EQZ-69, modo "Vários" do Escanear). A quantidade
+   vai sempre positiva; o tipo diz o sentido. Sem produto repetido: a tela soma antes de mandar */
+export const MAX_LOTE = 300;
+export const AdjustBatchSchema = z.object({
+  workspace_id: z.string().uuid("workspace_id inválido"),
+  tipo:   z.enum(["entrada", "saida"], { errorMap: () => ({ message: "Tipo inválido" }) }),
+  motivo: z.enum(MOTIVOS_SAIDA).optional(),
+  reason: str(300).optional(),
+  itens:  z.array(z.object({
+    product_id: z.string().uuid("Produto inválido"),
+    qty:        z.number().transform(round(3)).refine((q) => q > 0 && q <= 999_999_999, "Quantidade inválida"),
+  }))
+    .min(1, "A lista está vazia")
+    .max(MAX_LOTE, `Até ${MAX_LOTE} produtos por vez`)
+    .refine((l) => new Set(l.map((i) => i.product_id)).size === l.length, "Produto repetido na lista"),
+});
+
 /* Importação de planilha (EQZ-14): o front lê o arquivo e manda os produtos já mapeados.
    O teto evita estourar as colunas numeric(12,x) do banco. */
 const MAX_NUM = 999_999_999;
