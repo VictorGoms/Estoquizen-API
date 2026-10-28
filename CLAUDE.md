@@ -115,7 +115,8 @@ mínimo, compartilhados pela equipe (qualquer membro ativo; gravar exige assinat
 ### Workspaces — `src/routes/v1/workspaces.ts`
 - `GET  /workspaces` — workspaces do usuário autenticado (via RLS)
 - `GET  /workspaces/:id/stats` — contadores para dashboard: `{ produtos, alertas, movimentacoes }` — alerta = zerado ou `qty <= min_qty` (mesma regra do `deriveStatus` do front)
-- `POST /workspaces` — aceita `segment`/`segment_other` (EQZ-13); valida o CPF **antes** de criar; cria workspace, owner e subscription; desfaz tudo se um passo falhar (usa supabaseAdmin)
+- `GET  /workspaces/teste-disponivel` — `{ disponivel, pendente }` para a escolha de plano (2026-10-28): `disponivel` é só pela conta (`trial_grants.user_id`; o CPF fica para a criação, para a rota não dizer se um CPF já foi usado) e `pendente` é o workspace esperando pagamento
+- `POST /workspaces` — aceita `segment`/`segment_other` (EQZ-13); valida o CPF **antes** de criar; cria workspace, owner e subscription; desfaz tudo se um passo falhar (usa supabaseAdmin). **No máximo 1 workspace esperando pagamento por pessoa** (2026-10-28, `src/lib/empresaPendente.ts`): quem já usou o teste cria o workspace sem teste (`trial_expired`, `trial_ends_at` vazio) e paga na hora; se fechar o pagamento, ele fica bloqueado. Com um assim (e sem `stripe_subscription_id`), a rota responde 409 pedindo para assinar por ele ou excluí-lo. Sem isso, cada clique criava mais um workspace bloqueado
 - `PATCH /workspaces/:id` — atualiza workspace (nome, descrição, `segment`, `segment_other`)
 - `DELETE /workspaces/:id` — exclui workspace (apenas owner); cascata apaga members, products e movements via FK
 

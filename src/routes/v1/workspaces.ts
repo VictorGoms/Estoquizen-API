@@ -8,6 +8,7 @@ import { sanitizeCpf } from "../../lib/sanitize.js";
 import { stripe } from "../../lib/stripe.js";
 import { fimDoTeste } from "../../lib/trial.js";
 import { apagarFotosDoWorkspace } from "../../lib/fotos.js";
+import { workspaceEsperandoPagamento, msgWorkspacePendente } from "../../lib/empresaPendente.js";
 
 const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
   const auth       = { preHandler: [fastify.authenticate] };
@@ -50,10 +51,26 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send(ok({ produtos: produtos.length, alertas, movimentacoes: movimentacoes ?? 0 }));
   });
 
+  /* GET /workspaces/teste-disponivel — a escolha de plano mostra "R$ 0,00" ou avisa antes de criar (2026-10-28).
+     Só pela conta: o CPF é conferido na criação, para esta rota não dizer se um CPF já foi usado */
+  fastify.get("/workspaces/teste-disponivel", auth, async (req, reply) => {
+    const [{ data: grant, error }, { pendente, error: pendErr }] = await Promise.all([
+      supabaseAdmin.from("trial_grants").select("user_id").eq("user_id", req.user.id).maybeSingle(),
+      workspaceEsperandoPagamento(req.user.id),
+    ]);
+    if (error || pendErr) return sendDbError(req, reply, (error ?? pendErr)!);
+    return reply.send(ok({ disponivel: !grant, pendente }));
+  });
+
   /* POST /workspaces — cria workspace, owner e subscription de trial */
   fastify.post("/workspaces", authStrict, async (req, reply) => {
     const parsed = CreateWorkspaceSchema.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send(fail(parsed.error.errors[0].message));
+
+    /* No máximo 1 workspace esperando pagamento por pessoa (lib/empresaPendente.ts) */
+    const { pendente, error: pendErr } = await workspaceEsperandoPagamento(req.user.id);
+    if (pendErr) return sendDbError(req, reply, pendErr);
+    if (pendente) return reply.status(409).send(fail(msgWorkspacePendente(pendente.name)));
 
     const { cpf: cpfRawInput, ...workspaceFields } = parsed.data;
 
