@@ -76,26 +76,31 @@ const billingRoutes: FastifyPluginAsync = async (fastify) => {
     const { workspace_id } = req.query as { workspace_id?: string };
     if (!workspace_id) return reply.status(400).send(fail("workspace_id é obrigatório"));
 
-    if (!await requireMember(workspace_id, req.user.id, reply)) return;
+    const papel = await requireMember(workspace_id, req.user.id, reply);
+    if (!papel) return;
 
     /* Trial vencido aparece como vencido mesmo se o job diário ainda não rodou */
     await expireTrialIfDue(workspace_id).catch((err) => req.log.error({ err, workspace_id }, "falha ao expirar o trial"));
 
-    const { data, error } = await supabaseAdmin
+    /* Só o que as telas usam (EQZ-66): antes ia a linha inteira, com as marcas internas dos e-mails */
+    const { data: linha, error } = await supabaseAdmin
       .from("subscriptions")
-      .select("*")
+      .select("status, plan, trial_ends_at, current_period_end, cancel_at_period_end, expired_at, stripe_customer_id, stripe_subscription_id, pause_starts_at, pause_ends_at")
       .eq("workspace_id", workspace_id)
       .maybeSingle();
 
     if (error) return sendDbError(req, reply, error);
-    if (!data)  return reply.status(404).send(fail("Assinatura não encontrada"));
+    if (!linha) return reply.status(404).send(fail("Assinatura não encontrada"));
+
+    /* Os ids do Stripe só aparecem para o dono, que é quem mexe na cobrança (Configurações) */
+    const data = papel === "owner" ? linha : { ...linha, stripe_customer_id: null, stripe_subscription_id: null };
 
     /* EQZ-07: a tela não calcula datas na renderização, então a API diz se a pausa está em
        andamento (workspace bloqueado), se está agendada (ainda no mês pago) e se dá para pausar */
     const agora          = Date.now();
     const pausada        = pausaEmAndamento(data, agora);
     const pausaAgendada  = !!data.pause_starts_at && agora < new Date(data.pause_starts_at).getTime();
-    const pausaDisponivel = data.status === "active" && !!data.stripe_subscription_id && !data.cancel_at_period_end
+    const pausaDisponivel = data.status === "active" && !!linha.stripe_subscription_id && !data.cancel_at_period_end
       && !pausada && !pausaAgendada;
 
     return reply.send(ok({ ...data, pausada, pausa_agendada: pausaAgendada, pausa_disponivel: pausaDisponivel }));

@@ -108,3 +108,47 @@ describe("POST /billing/desistir: 1 vez por pessoa, também com pedidos ao mesmo
     expect(falso.em("desistencias", "delete")).toHaveLength(0);
   });
 });
+
+describe("GET /billing/subscription: só o necessário, ids do Stripe só para o dono (EQZ-66)", () => {
+  const linha = {
+    status: "active", plan: "growth", trial_ends_at: null, current_period_end: "2026-11-28T00:00:00Z",
+    cancel_at_period_end: false, expired_at: null, stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1",
+    pause_starts_at: null, pause_ends_at: null,
+  };
+
+  beforeEach(() => {
+    falso.limpar();
+    falso.responder = (c) => {
+      if (c.tabela === "workspace_members") {
+        const papel = c.filtros.user_id === DONO ? "owner" : c.filtros.user_id === "admin" ? "admin" : null;
+        return { data: papel ? { role: papel } : null };
+      }
+      if (c.tabela === "subscriptions" && c.op === "select") return { data: linha };
+      return undefined;
+    };
+  });
+
+  const consultar = async (quem: string) => {
+    const app = await montarApp(billingRoutes);
+    return app.inject({ method: "GET", url: `/api/v1/billing/subscription?workspace_id=${WS}`, headers: comoUsuario(quem) });
+  };
+
+  it("o dono recebe os ids do Stripe e a pausa disponível", async () => {
+    const res = await consultar(DONO);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data).toMatchObject({ stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1", pausa_disponivel: true });
+  });
+
+  it("o admin vê o status, mas não os ids do Stripe", async () => {
+    const res = await consultar("admin");
+    expect(res.json().data).toMatchObject({ status: "active", plan: "growth", stripe_customer_id: null, stripe_subscription_id: null });
+  });
+
+  it("não vão as marcas internas (e-mails, avisos)", async () => {
+    const res = await consultar(DONO);
+    const dados = res.json().data as Record<string, unknown>;
+    for (const interno of ["confirmation_email_sub_id", "warned_at", "final_warned_at", "trial_recap_sent_at", "workspace_id"]) {
+      expect(dados).not.toHaveProperty(interno);
+    }
+  });
+});
