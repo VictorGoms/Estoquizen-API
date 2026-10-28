@@ -9,6 +9,7 @@ import { stripe } from "../../lib/stripe.js";
 import { fimDoTeste, hashEmailDoTeste } from "../../lib/trial.js";
 import { apagarFotosDoWorkspace } from "../../lib/fotos.js";
 import { workspaceEsperandoPagamento, msgWorkspacePendente } from "../../lib/empresaPendente.js";
+import { requireMember } from "../../lib/membership.js";
 
 const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
   const auth       = { preHandler: [fastify.authenticate] };
@@ -152,6 +153,52 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
 
     /* trial: false = já usou o teste (ou o CPF é de outra conta): o front abre o pagamento */
     return reply.status(201).send(ok({ ...ws, trial: hasTrial }));
+  });
+
+  /*
+   * POST /workspaces/:id/desistir — fechou o pagamento logo depois de criar (2026-10-28, pedido do João: quem
+   * desiste não deixa workspace para trás). Só o dono, e só um workspace esperando pagamento (nasceu sem teste,
+   * bloqueado, sem assinatura). Antes de apagar, o Stripe: checkout já pago → 409 (o webhook vai ativar);
+   * checkout aberto → expira, para ninguém pagar um workspace apagado.
+   */
+  fastify.post("/workspaces/:id/desistir", authStrict, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!await requireMember(id, req.user.id, reply, ["owner"])) return;
+
+    const { data: sub, error } = await supabaseAdmin
+      .from("subscriptions")
+      .select("status, trial_ends_at, stripe_subscription_id, stripe_customer_id")
+      .eq("workspace_id", id)
+      .maybeSingle();
+    if (error) return sendDbError(req, reply, error);
+    if (!sub || sub.status !== "trial_expired" || sub.trial_ends_at || sub.stripe_subscription_id) {
+      return reply.status(409).send(fail("Este workspace não está esperando o primeiro pagamento."));
+    }
+
+    if (sub.stripe_customer_id) {
+      try {
+        const sessoes = await stripe.checkout.sessions.list({ customer: sub.stripe_customer_id, limit: 20 });
+        if (sessoes.data.some((s) => s.status === "complete")) {
+          return reply.status(409).send(fail("O pagamento já foi feito. Aguarde alguns segundos: o plano está sendo ativado."));
+        }
+        for (const s of sessoes.data.filter((s) => s.status === "open")) {
+          await stripe.checkout.sessions.expire(s.id);
+        }
+      } catch (err) {
+        /* Sem conferir o Stripe, não apaga: o workspace fica esperando pagamento (o limite de 1 continua valendo) */
+        req.log.error({ err, workspace_id: id }, "desistir: falha ao conferir o checkout no Stripe");
+        return reply.status(502).send(fail("Não foi possível cancelar agora. O workspace ficou esperando pagamento."));
+      }
+    }
+
+    const { error: delErr } = await supabaseAdmin.from("workspaces").delete().eq("id", id);
+    if (delErr) return sendDbError(req, reply, delErr);
+
+    if (sub.stripe_customer_id) {
+      await stripe.customers.del(sub.stripe_customer_id).catch((err) =>
+        req.log.warn({ err, workspace_id: id }, "desistir: cliente do Stripe não apagado"));
+    }
+    return reply.send(ok({ apagado: true }));
   });
 
   /* PATCH /workspaces/:id */
