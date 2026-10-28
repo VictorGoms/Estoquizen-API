@@ -7,6 +7,7 @@ vi.mock("../src/lib/supabase.js", async () => (await import("./apoio/supabaseFal
 process.env.RESEND_API_KEY    ??= "re_teste";
 process.env.STRIPE_SECRET_KEY ??= "sk_test_teste";
 const { default: workspacesRoutes } = await import("../src/routes/v1/workspaces.js");
+const { hashEmailDoTeste }          = await import("../src/lib/trial.js");
 
 const DONO     = "dono";
 const PARADO   = "22222222-2222-4222-8222-222222222222";
@@ -53,6 +54,22 @@ describe("no máximo 1 workspace esperando pagamento por pessoa (2026-10-28)", (
     expect(res.json().data.trial).toBe(true);
     const [sub] = falso.em("subscriptions", "insert");
     expect(sub.dados).toMatchObject({ workspace_id: "novo", status: "trialing" });
+    /* O teste fica preso também ao e-mail normalizado da conta (o falso dá "dono@teste") */
+    const [grant] = falso.em("trial_grants", "insert");
+    expect(grant.dados).toMatchObject({ user_id: DONO, email_hash: hashEmailDoTeste("dono@teste") });
+  });
+
+  it("e-mail já usado em outro teste (índice único): cria sem teste e abre o pagamento", async () => {
+    falso.responder = (c) => {
+      if (c.tabela === "workspaces" && c.op === "select")  return { data: [] };
+      if (c.tabela === "workspaces" && c.op === "insert")  return { data: { id: "novo", name: "Loja Nova" } };
+      if (c.tabela === "trial_grants" && c.op === "insert") return { error: { message: "duplicate key", code: "23505" } };
+    };
+    const res = await criar();
+
+    expect(res.statusCode).toBe(201);
+    expect(res.json().data.trial).toBe(false);
+    expect(falso.em("subscriptions", "insert")[0].dados).toMatchObject({ status: "trial_expired", trial_ends_at: null });
   });
 });
 
@@ -73,8 +90,8 @@ describe("GET /workspaces/teste-disponivel", () => {
     const res = await consultar();
     expect(res.statusCode).toBe(200);
     expect(res.json().data).toEqual({ disponivel: false, pendente: { id: PARADO, name: "Loja Parada" } });
-    /* Só pela conta: nada de CPF nessa rota */
-    expect(falso.em("trial_grants")[0].filtros).toEqual({ user_id: DONO });
+    /* Pela conta ou pelo e-mail normalizado dela; nada de CPF nessa rota */
+    expect(falso.em("trial_grants")[0].filtros).toEqual({ ":or": `user_id.eq.${DONO},email_hash.eq.${hashEmailDoTeste("dono@teste")}` });
   });
 
   it("conta nova: teste disponível e nada pendente", async () => {

@@ -3,7 +3,7 @@ import { sanitizeText, sanitizeCode, sanitizeCpf, sanitizeEmail } from "../src/l
 import { chaveValida, gtinValido, codigoDoItem, cnpjRaizDaChave } from "../src/lib/nfeChave.js";
 import { getLimits, PLAN_LIMITS } from "../src/lib/plans.js";
 import { escapeHtml, layoutEmail } from "../src/lib/emailLayout.js";
-import { DIAS_MINIMOS, fimDoTeste } from "../src/lib/trial.js";
+import { DIAS_MINIMOS, fimDoTeste, normalizarEmail, hashEmailDoTeste } from "../src/lib/trial.js";
 
 describe("sanitize", () => {
   it("texto: tira tags, null bytes e espaço sobrando, e corta no limite", () => {
@@ -89,5 +89,25 @@ describe("teste grátis (lançamento grátis até 05/01/2027, decisão de 2026-1
   });
   it("depois de 05/01, todo cadastro novo tem 14 dias", () => {
     expect(fimDoTeste(new Date("2027-02-01T12:00:00Z")).toISOString()).toBe("2027-02-15T12:00:00.000Z");
+  });
+});
+
+/* Saída do Postgres de produção para o mesmo texto (conferida em 2026-10-28) */
+const SHA_JOAO_GMAIL = "bc6729088c4a2271f55a0eb55136ffe6bb18d81c8859afbe3a9a65edd91ce352";
+
+describe("1 teste por e-mail normalizado (2026-10-28)", () => {
+  it("variações do mesmo Gmail viram o mesmo e-mail", () => {
+    for (const e of ["joao@gmail.com", "Joao@Gmail.com", "j.o.a.o@gmail.com", "joao+teste2@gmail.com", " joao+x@googlemail.com "]) {
+      expect(normalizarEmail(e), e).toBe("joao@gmail.com");
+    }
+  });
+  it("fora do Gmail tira só o +algo (o ponto conta)", () => {
+    expect(normalizarEmail("Ana.Lima+loja@Outlook.com")).toBe("ana.lima@outlook.com");
+    expect(normalizarEmail("ana.lima@outlook.com")).not.toBe(normalizarEmail("analima@outlook.com"));
+  });
+  it("o hash é o mesmo para as variações e igual ao do SQL da migração", () => {
+    expect(hashEmailDoTeste("j.oao+1@gmail.com")).toBe(hashEmailDoTeste("joao@gmail.com"));
+    /* encode(sha256(convert_to('joao@gmail.com', 'UTF8')), 'hex') no Postgres */
+    expect(hashEmailDoTeste("joao@gmail.com")).toBe(SHA_JOAO_GMAIL);
   });
 });

@@ -46,6 +46,7 @@ begin
   if not exists (select 1 from pg_trigger where tgname = 'products_plan_limit')       then falhas := falhas || 'falta a trigger products_plan_limit'::text; end if;
   if to_regclass('public.desistencias_user_id_unico') is null then falhas := falhas || 'falta o índice único de desistencias (EQZ-58)'::text; end if;
   if to_regclass('public.stripe_events')  is null then falhas := falhas || 'falta a tabela stripe_events (EQZ-59)'::text; end if;
+  if to_regclass('public.trial_grants_email_hash_key') is null then falhas := falhas || 'falta a trava de 1 teste por e-mail (2026-10-28)'::text; end if;
   if to_regclass('public.catalogo_sefaz') is null then falhas := falhas || 'falta a tabela catalogo_sefaz (EQZ-60)'::text; end if;
   if not exists (select 1 from pg_constraint where conname = 'workspaces_nome_sem_tag') then
     falhas := falhas || 'falta a trava de < > no nome do workspace (e-mail de convite)'::text;

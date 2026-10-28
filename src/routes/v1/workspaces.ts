@@ -6,7 +6,7 @@ import { ok, fail, dbError, sendDbError } from "../../lib/response.js";
 import { assertActiveSubscription } from "../../lib/checkSubscription.js";
 import { sanitizeCpf } from "../../lib/sanitize.js";
 import { stripe } from "../../lib/stripe.js";
-import { fimDoTeste } from "../../lib/trial.js";
+import { fimDoTeste, hashEmailDoTeste } from "../../lib/trial.js";
 import { apagarFotosDoWorkspace } from "../../lib/fotos.js";
 import { workspaceEsperandoPagamento, msgWorkspacePendente } from "../../lib/empresaPendente.js";
 
@@ -54,8 +54,10 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
   /* GET /workspaces/teste-disponivel — a escolha de plano mostra "R$ 0,00" ou avisa antes de criar (2026-10-28).
      Só pela conta: o CPF é conferido na criação, para esta rota não dizer se um CPF já foi usado */
   fastify.get("/workspaces/teste-disponivel", auth, async (req, reply) => {
+    /* Pela conta ou pelo e-mail normalizado da própria conta (o "+algo" do mesmo Gmail não ganha outro teste) */
+    const porEmail = req.user.email ? `,email_hash.eq.${hashEmailDoTeste(req.user.email)}` : "";
     const [{ data: grant, error }, { pendente, error: pendErr }] = await Promise.all([
-      supabaseAdmin.from("trial_grants").select("user_id").eq("user_id", req.user.id).maybeSingle(),
+      supabaseAdmin.from("trial_grants").select("user_id").or(`user_id.eq.${req.user.id}${porEmail}`).limit(1).maybeSingle(),
       workspaceEsperandoPagamento(req.user.id),
     ]);
     if (error || pendErr) return sendDbError(req, reply, (error ?? pendErr)!);
@@ -121,7 +123,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     /* Todos os planos têm teste grátis (`fimDoTeste` em lib/trial.ts: lançamento grátis até 05/01/2027,
-       depois 14 dias). 1 trial por pessoa e por CPF: os índices únicos de trial_grants
+       depois 14 dias). 1 trial por conta, por CPF e por e-mail normalizado: os índices únicos de trial_grants
        tornam a concessão atômica (antes a checagem usava um embed inexistente e todo workspace novo ganhava trial). */
     const plan = parsed.data.plan ?? "basic";
     let hasTrial = false;
@@ -130,6 +132,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
       const { error: grantErr } = await supabaseAdmin.from("trial_grants").insert({
         user_id:      req.user.id,
         cpf_hash:     createHash("sha256").update(cpf).digest("hex"),
+        email_hash:   req.user.email ? hashEmailDoTeste(req.user.email) : null,
         workspace_id: ws.id,
       });
       if (!grantErr) hasTrial = true;
