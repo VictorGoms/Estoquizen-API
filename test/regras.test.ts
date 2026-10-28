@@ -3,7 +3,7 @@ import { sanitizeText, sanitizeCode, sanitizeCpf, sanitizeEmail } from "../src/l
 import { chaveValida, gtinValido, codigoDoItem, cnpjRaizDaChave } from "../src/lib/nfeChave.js";
 import { getLimits, PLAN_LIMITS } from "../src/lib/plans.js";
 import { escapeHtml, layoutEmail } from "../src/lib/emailLayout.js";
-import { DIAS_TESTE, fimDoTeste } from "../src/lib/trial.js";
+import { DIAS_MINIMOS, fimDoTeste } from "../src/lib/trial.js";
 
 describe("sanitize", () => {
   it("texto: tira tags, null bytes e espaço sobrando, e corta no limite", () => {
@@ -78,10 +78,16 @@ describe("layout dos e-mails", () => {
   });
 });
 
-describe("teste grátis (oferta de lançamento de 2026-10-21)", () => {
-  it("dura 30 dias em todos os planos", () => {
-    expect(DIAS_TESTE).toBe(30);
-    const inicio = new Date("2026-10-21T12:00:00Z");
-    expect(fimDoTeste(inicio).toISOString()).toBe("2026-11-20T12:00:00.000Z");
+describe("teste grátis (lançamento grátis até 05/01/2027, decisão de 2026-10-28)", () => {
+  it("quem começa antes vai até 05/01 inclusive (fim em 06/01 00:00 de Brasília)", () => {
+    expect(fimDoTeste(new Date("2026-10-28T12:00:00Z")).toISOString()).toBe("2027-01-06T03:00:00.000Z");
+    expect(fimDoTeste(new Date("2026-12-22T12:00:00Z")).toISOString()).toBe("2027-01-06T03:00:00.000Z");
+  });
+  it("quem começa perto da data ganha pelo menos 14 dias", () => {
+    expect(DIAS_MINIMOS).toBe(14);
+    expect(fimDoTeste(new Date("2027-01-03T12:00:00Z")).toISOString()).toBe("2027-01-17T12:00:00.000Z");
+  });
+  it("depois de 05/01, todo cadastro novo tem 14 dias", () => {
+    expect(fimDoTeste(new Date("2027-02-01T12:00:00Z")).toISOString()).toBe("2027-02-15T12:00:00.000Z");
   });
 });

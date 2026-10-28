@@ -103,8 +103,8 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
         .is("cpf", null);
     }
 
-    /* Todos os planos têm teste grátis (DIAS_TESTE em lib/trial.ts; oferta de lançamento de 2026-10-21,
-       antes o Pro pagava na hora). 1 trial por pessoa e por CPF: os índices únicos de trial_grants
+    /* Todos os planos têm teste grátis (`fimDoTeste` em lib/trial.ts: lançamento grátis até 05/01/2027,
+       depois 14 dias). 1 trial por pessoa e por CPF: os índices únicos de trial_grants
        tornam a concessão atômica (antes a checagem usava um embed inexistente e todo workspace novo ganhava trial). */
     const plan = parsed.data.plan ?? "basic";
     let hasTrial = false;

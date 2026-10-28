@@ -299,7 +299,7 @@ As variáveis `SMTP_*` não são mais usadas (o `mailer.ts` foi removido).
 | `pro` | Pro | R$59,90/mês | 2000 | sem limite |
 
 ### Modelo de trial
-- **Todos os planos têm teste grátis de 30 dias** (`DIAS_TESTE` em `src/lib/trial.ts`; oferta de lançamento decidida pelo João em 2026-10-21 para quem começar até 30/11/2026, Pro incluído para verem o histórico por funcionário). Antes: Basic e Growth com 14 dias e Pro pago na hora. Em 01/12 o João decide se volta para 14 (mudar a constante aqui e `src/lib/teste.ts` no front). `POST /workspaces` devolve `trial: true|false`; sem trial (já usou), o front abre o pagamento na hora
+- **Lançamento grátis até 05/01/2027** (decisão do João em 2026-10-28, para vender sem CNPJ; substitui os 30 dias de 2026-10-21): todos os planos de graça até 05/01 inclusive (`trial_ends_at` = 06/01/2027 00:00 de Brasília), a cobrança começa em 06/01. Quem começa a partir de 23/12 ganha pelo menos 14 dias (`DIAS_MINIMOS`), e depois de 05/01 todo cadastro novo tem 14. Regra em `fimDoTeste()` de `src/lib/trial.ts`; os testes que já estavam rodando foram estendidos pela migração `20261028130000_lancamento_gratis`. Os textos ficam no front (`src/lib/teste.ts`): **depois de 05/01, trocar lá para "14 dias grátis" e tirar o preço riscado**. `POST /workspaces` devolve `trial: true|false`; sem trial (já usou), o front abre o pagamento na hora
 - Trial é **1 por pessoa e 1 por CPF** — a API tenta inserir em `trial_grants` (índices únicos em user_id e no hash do CPF); se der conflito, cria sem trial. CPF de outra conta também fica sem trial
 - CPF é **obrigatório** para todos os planos e validado antes de criar o workspace; salvo em `profiles.cpf` (só na primeira vez — não sobrescreve). O cliente não lê essa coluna (EQZ-54)
 - **Limite conhecido (decisão de 2026-10-24, EQZ-58):** o CPF não é verificado contra o nome. Quem gera CPFs válidos ganha um teste por conta nova, e quem cadastra primeiro o CPF de outra pessoa tira o teste dela. Aceito enquanto não houver pagantes; quando houver, pensar em cartão no teste ou checagem CPF×nome
@@ -307,7 +307,7 @@ As variáveis `SMTP_*` não são mais usadas (o `mailer.ts` foi removido).
 - O Stripe **não é criado durante o trial** — a assinatura é puramente local no banco
 - O Stripe só entra quando o usuário decide pagar
 
-**Duração do trial:** `DIAS_TESTE` (30 hoje) a partir da criação do workspace, em `fimDoTeste()` de `src/lib/trial.ts`. A regra antiga (30 dias até 2026-06-30, 14 depois) saiu.
+**Duração do trial:** `fimDoTeste()` de `src/lib/trial.ts`: o que vier depois entre 06/01/2027 00:00 (Brasília) e 14 dias após a criação do workspace.
 
 ### Timeline após expiração do trial
 ```
