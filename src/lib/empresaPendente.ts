@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "./supabase.js";
+import { fimDoTeste } from "./trial.js";
 
 /*
  * Workspace esperando pagamento (2026-10-28, pedido do João: ninguém criar 500 empresas). Quem já usou o teste
@@ -27,3 +28,29 @@ export async function workspaceEsperandoPagamento(userId: string) {
 
 export const msgWorkspacePendente = (nome: string) =>
   `Você já tem o workspace "${nome}" esperando pagamento. Assine por ele na escolha de workspace ou exclua-o em Configurações antes de criar outro.`;
+
+/*
+ * Teste da própria conta (decisão do João em 2026-10-28: o teste é da pessoa, não do workspace). Se o workspace
+ * do teste foi excluído e o prazo ainda não acabou, o próximo workspace usa o mesmo teste, até a mesma data,
+ * sem dia a mais: quem se atrapalhou e recomeçou não cai no pagamento, e ninguém estica o teste.
+ * `trial_grants.workspace_id` não tem chave estrangeira: depois da exclusão aponta para um id que não existe.
+ */
+export async function testeDaConta(userId: string) {
+  const { data: grant, error } = await supabaseAdmin
+    .from("trial_grants")
+    .select("id, workspace_id, granted_at")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error || !grant) return { grant: null, recomecarAte: null, error };
+
+  const fim = fimDoTeste(new Date(grant.granted_at as string));
+  if (fim <= new Date()) return { grant, recomecarAte: null, error: null };
+
+  if (grant.workspace_id) {
+    const { data: ws, error: wsErr } = await supabaseAdmin
+      .from("workspaces").select("id").eq("id", grant.workspace_id).maybeSingle();
+    if (wsErr) return { grant, recomecarAte: null, error: wsErr };
+    if (ws) return { grant, recomecarAte: null, error: null };   // o workspace do teste continua existindo
+  }
+  return { grant, recomecarAte: fim, error: null };
+}

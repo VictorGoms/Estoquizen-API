@@ -7,7 +7,7 @@ vi.mock("../src/lib/supabase.js", async () => (await import("./apoio/supabaseFal
 process.env.RESEND_API_KEY    ??= "re_teste";
 process.env.STRIPE_SECRET_KEY ??= "sk_test_teste";
 const { default: workspacesRoutes } = await import("../src/routes/v1/workspaces.js");
-const { hashEmailDoTeste }          = await import("../src/lib/trial.js");
+const { hashEmailDoTeste, fimDoTeste } = await import("../src/lib/trial.js");
 const { stripe }                    = await import("../src/lib/stripe.js");
 
 const DONO     = "dono";
@@ -77,26 +77,47 @@ describe("no máximo 1 workspace esperando pagamento por pessoa (2026-10-28)", (
 describe("GET /workspaces/teste-disponivel", () => {
   beforeEach(() => falso.limpar());
 
+  const HASH = hashEmailDoTeste("dono@teste");
   const consultar = async () => {
     const app = await montarApp(workspacesRoutes);
     return app.inject({ method: "GET", url: "/api/v1/workspaces/teste-disponivel", headers: comoUsuario(DONO) });
   };
-
-  it("quem já usou o teste vê disponivel: false e o workspace pendente", async () => {
+  /* grant da própria conta, outra conta com o mesmo e-mail normalizado e se o workspace do teste ainda existe */
+  const preparar = (o: { proprio?: unknown; outra?: unknown; wsDoTesteExiste?: boolean; pendente?: boolean }) => {
     falso.responder = (c) => {
-      if (c.tabela === "trial_grants")  return { data: { user_id: DONO } };
-      if (c.tabela === "workspaces")    return { data: [{ id: PARADO, name: "Loja Parada" }] };
-      if (c.tabela === "subscriptions") return { data: { workspace_id: PARADO } };
+      if (c.tabela === "trial_grants" && c.filtros.user_id)    return { data: o.proprio ?? null };
+      if (c.tabela === "trial_grants" && c.filtros.email_hash) return { data: o.outra ?? null };
+      if (c.tabela === "workspaces" && c.filtros.id)           return { data: o.wsDoTesteExiste ? { id: c.filtros.id } : null };
+      if (c.tabela === "workspaces")    return { data: o.pendente ? [{ id: PARADO, name: "Loja Parada" }] : [] };
+      if (c.tabela === "subscriptions") return { data: o.pendente ? { workspace_id: PARADO } : null };
     };
+  };
+  const GRANT = { id: "g1", workspace_id: "ws-do-teste", granted_at: "2026-10-28T10:00:00Z" };
+
+  it("teste usado num workspace que ainda existe: disponivel false, com o pendente", async () => {
+    preparar({ proprio: GRANT, wsDoTesteExiste: true, pendente: true });
     const res = await consultar();
     expect(res.statusCode).toBe(200);
     expect(res.json().data).toEqual({ disponivel: false, pendente: { id: PARADO, name: "Loja Parada" } });
-    /* Pela conta ou pelo e-mail normalizado dela; nada de CPF nessa rota */
-    expect(falso.em("trial_grants")[0].filtros).toEqual({ ":or": `user_id.eq.${DONO},email_hash.eq.${hashEmailDoTeste("dono@teste")}` });
+    /* Pela conta e pelo e-mail normalizado dela; nada de CPF nessa rota */
+    expect(falso.em("trial_grants").map((c) => c.filtros)).toEqual(
+      expect.arrayContaining([{ user_id: DONO }, { email_hash: HASH, "user_id:neq": DONO }]));
+  });
+
+  it("workspace do teste excluído e prazo valendo: disponível de novo (recomeçar)", async () => {
+    preparar({ proprio: GRANT, wsDoTesteExiste: false });
+    const res = await consultar();
+    expect(res.json().data).toEqual({ disponivel: true, pendente: null });
+  });
+
+  it("outra conta com o mesmo e-mail normalizado já usou: não disponível", async () => {
+    preparar({ outra: { user_id: "outra-conta" } });
+    const res = await consultar();
+    expect(res.json().data.disponivel).toBe(false);
   });
 
   it("conta nova: teste disponível e nada pendente", async () => {
-    falso.responder = (c) => (c.tabela === "workspaces" ? { data: [] } : undefined);
+    preparar({});
     const res = await consultar();
     expect(res.json().data).toEqual({ disponivel: true, pendente: null });
   });
@@ -105,6 +126,74 @@ describe("GET /workspaces/teste-disponivel", () => {
     const app = await montarApp(workspacesRoutes);
     const res = await app.inject({ method: "GET", url: "/api/v1/workspaces/teste-disponivel" });
     expect(res.statusCode).toBe(401);
+  });
+});
+
+describe("recomeçar: o teste é da pessoa, não do workspace (2026-10-28)", () => {
+  beforeEach(() => falso.limpar());
+
+  const GRANT = { id: "g1", workspace_id: "ws-apagado", granted_at: "2026-10-28T10:00:00Z" };
+  const preparar = (o: { wsDoTesteExiste?: boolean; trocou?: boolean; falhaNaAssinatura?: boolean } = {}) => {
+    falso.responder = (c) => {
+      if (c.tabela === "workspaces" && c.op === "insert")    return { data: { id: "novo", name: "Loja Nova" } };
+      if (c.tabela === "workspaces" && c.filtros.id)         return { data: o.wsDoTesteExiste ? { id: "ws-apagado" } : null };
+      if (c.tabela === "workspaces" && c.op === "select")    return { data: [] };
+      if (c.tabela === "trial_grants" && c.op === "insert")  return { error: { message: "duplicate key", code: "23505" } };
+      if (c.tabela === "trial_grants" && c.op === "select")  return { data: GRANT };
+      if (c.tabela === "trial_grants" && c.op === "update")  return { data: o.trocou === false ? [] : [{ id: "g1" }] };
+      if (c.tabela === "subscriptions" && c.op === "insert" && o.falhaNaAssinatura) return { error: { message: "falhou" } };
+    };
+  };
+
+  it("workspace do teste excluído: o novo ganha o teste até a MESMA data, e o registro passa para ele", async () => {
+    preparar();
+    const res = await criar();
+
+    expect(res.statusCode).toBe(201);
+    expect(res.json().data.trial).toBe(true);
+    expect(falso.em("subscriptions", "insert")[0].dados).toMatchObject({
+      status: "trialing", trial_ends_at: fimDoTeste(new Date(GRANT.granted_at)).toISOString(),
+    });
+    const [troca] = falso.em("trial_grants", "update");
+    expect(troca.dados).toEqual({ workspace_id: "novo" });
+    /* Só troca se ainda aponta para o workspace antigo: dois pedidos juntos não levam dois testes */
+    expect(troca.filtros).toEqual({ id: "g1", workspace_id: "ws-apagado" });
+  });
+
+  it("o workspace do teste ainda existe: o novo começa pago", async () => {
+    preparar({ wsDoTesteExiste: true });
+    const res = await criar();
+    expect(res.json().data.trial).toBe(false);
+    expect(falso.em("trial_grants", "update")).toHaveLength(0);
+  });
+
+  it("outro pedido já levou o teste (a troca não pegou nada): começa pago", async () => {
+    preparar({ trocou: false });
+    const res = await criar();
+    expect(res.json().data.trial).toBe(false);
+  });
+
+  it("prazo do teste já acabou: começa pago", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2027-03-01T12:00:00Z"));
+    try {
+      preparar();
+      const res = await criar();
+      expect(res.json().data.trial).toBe(false);
+      expect(falso.em("trial_grants", "update")).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("se a criação falha depois, o registro do teste volta para o workspace antigo (não é apagado)", async () => {
+    preparar({ falhaNaAssinatura: true });
+    const res = await criar();
+
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+    expect(falso.em("trial_grants", "delete")).toHaveLength(0);
+    const volta = falso.em("trial_grants", "update").at(-1)!;
+    expect(volta.dados).toEqual({ workspace_id: "ws-apagado" });
   });
 });
 

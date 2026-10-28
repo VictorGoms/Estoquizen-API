@@ -8,7 +8,7 @@ import { sanitizeCpf } from "../../lib/sanitize.js";
 import { stripe } from "../../lib/stripe.js";
 import { fimDoTeste, hashEmailDoTeste } from "../../lib/trial.js";
 import { apagarFotosDoWorkspace } from "../../lib/fotos.js";
-import { workspaceEsperandoPagamento, msgWorkspacePendente } from "../../lib/empresaPendente.js";
+import { workspaceEsperandoPagamento, msgWorkspacePendente, testeDaConta } from "../../lib/empresaPendente.js";
 import { requireMember } from "../../lib/membership.js";
 
 const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
@@ -55,14 +55,20 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
   /* GET /workspaces/teste-disponivel — a escolha de plano mostra "R$ 0,00" ou avisa antes de criar (2026-10-28).
      Só pela conta: o CPF é conferido na criação, para esta rota não dizer se um CPF já foi usado */
   fastify.get("/workspaces/teste-disponivel", auth, async (req, reply) => {
-    /* Pela conta ou pelo e-mail normalizado da própria conta (o "+algo" do mesmo Gmail não ganha outro teste) */
-    const porEmail = req.user.email ? `,email_hash.eq.${hashEmailDoTeste(req.user.email)}` : "";
-    const [{ data: grant, error }, { pendente, error: pendErr }] = await Promise.all([
-      supabaseAdmin.from("trial_grants").select("user_id").or(`user_id.eq.${req.user.id}${porEmail}`).limit(1).maybeSingle(),
+    /* Disponível: a conta nunca usou (nem outra conta com o mesmo e-mail normalizado, o "+algo" do mesmo Gmail),
+       ou usou num workspace já excluído e o prazo ainda vale (recomeçar, até a mesma data) */
+    const emailHash = req.user.email ? hashEmailDoTeste(req.user.email) : null;
+    const [conta, outra, { pendente, error: pendErr }] = await Promise.all([
+      testeDaConta(req.user.id),
+      emailHash
+        ? supabaseAdmin.from("trial_grants").select("user_id").eq("email_hash", emailHash).neq("user_id", req.user.id).limit(1).maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
       workspaceEsperandoPagamento(req.user.id),
     ]);
-    if (error || pendErr) return sendDbError(req, reply, (error ?? pendErr)!);
-    return reply.send(ok({ disponivel: !grant, pendente }));
+    const error = conta.error ?? outra.error ?? pendErr;
+    if (error) return sendDbError(req, reply, error);
+    const disponivel = conta.recomecarAte !== null || (!conta.grant && !outra.data);
+    return reply.send(ok({ disponivel, pendente }));
   });
 
   /* POST /workspaces — cria workspace, owner e subscription de trial */
@@ -100,10 +106,14 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (wsErr) return sendDbError(req, reply, wsErr);
 
+    /* Teste reaproveitado ao recomeçar: no rollback ele volta a apontar para o workspace antigo, em vez de ser apagado */
+    let reusado: { id: string; antigo: string | null } | null = null;
+
     /* Desfaz o que já foi criado se um passo seguinte falhar (cascade apaga membros e assinatura) */
     const rollback = async (err: { message: string }) => {
       req.log.error({ err, workspace_id: ws.id }, "falha ao criar workspace; desfazendo");
-      await supabaseAdmin.from("trial_grants").delete().eq("workspace_id", ws.id);
+      if (reusado) await supabaseAdmin.from("trial_grants").update({ workspace_id: reusado.antigo }).eq("id", reusado.id);
+      else await supabaseAdmin.from("trial_grants").delete().eq("workspace_id", ws.id);
       await supabaseAdmin.from("workspaces").delete().eq("id", ws.id);
       return sendDbError(req, reply, err);
     };
@@ -127,7 +137,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
        depois 14 dias). 1 trial por conta, por CPF e por e-mail normalizado: os índices únicos de trial_grants
        tornam a concessão atômica (antes a checagem usava um embed inexistente e todo workspace novo ganhava trial). */
     const plan = parsed.data.plan ?? "basic";
-    let hasTrial = false;
+    let fimTeste: Date | null = null;
 
     if (!cpfOwner) {
       const { error: grantErr } = await supabaseAdmin.from("trial_grants").insert({
@@ -136,11 +146,27 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify) => {
         email_hash:   req.user.email ? hashEmailDoTeste(req.user.email) : null,
         workspace_id: ws.id,
       });
-      if (!grantErr) hasTrial = true;
+      if (!grantErr) fimTeste = fimDoTeste();
       else if (grantErr.code !== "23505") req.log.error({ err: grantErr }, "falha ao registrar trial");
+      else {
+        /* Já usou: se excluiu o workspace do teste e o prazo não acabou, este usa o mesmo teste (lib/empresaPendente.ts).
+           A troca só vale se o registro ainda aponta para o workspace antigo: dois pedidos juntos não levam dois testes */
+        const { grant, recomecarAte, error: recErr } = await testeDaConta(req.user.id);
+        if (recErr) req.log.error({ err: recErr }, "falha ao conferir o teste da conta");
+        else if (grant && recomecarAte) {
+          const antigo = (grant.workspace_id as string | null) ?? null;
+          const troca  = supabaseAdmin.from("trial_grants").update({ workspace_id: ws.id }).eq("id", grant.id);
+          const { data: assumiu } = await (antigo ? troca.eq("workspace_id", antigo) : troca.is("workspace_id", null)).select("id");
+          if (Array.isArray(assumiu) && assumiu.length) {
+            reusado  = { id: grant.id as string, antigo };
+            fimTeste = recomecarAte;
+          }
+        }
+      }
     }
 
-    const trialEndsAt = hasTrial ? fimDoTeste().toISOString() : null;
+    const hasTrial    = fimTeste !== null;
+    const trialEndsAt = fimTeste?.toISOString() ?? null;
 
     const { error: subErr } = await supabaseAdmin.from("subscriptions").insert({
       workspace_id:  ws.id,
