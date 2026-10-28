@@ -50,6 +50,12 @@ begin
   if not exists (select 1 from pg_constraint where conname = 'workspaces_nome_sem_tag') then
     falhas := falhas || 'falta a trava de < > no nome do workspace (e-mail de convite)'::text;
   end if;
+  -- Buckets de fotos: tamanho e tipos limitados (EQZ-64)
+  for t in select id from storage.buckets
+            where file_size_limit is null or file_size_limit > 5242880
+               or allowed_mime_types is null or not (allowed_mime_types <@ array['image/jpeg', 'image/png', 'image/webp']) loop
+    falhas := falhas || format('bucket %s sem limite de tamanho ou com tipos além de JPG/PNG/WebP', t.id);
+  end loop;
   if not exists (select 1 from pg_proc where proname = 'accept_workspace_invite' and pronargs = 1) then
     falhas := falhas || 'falta accept_workspace_invite(p_workspace_id) (EQZ-56)'::text;
   end if;
