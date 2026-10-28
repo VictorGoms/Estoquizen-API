@@ -6,6 +6,10 @@ import { getLimits } from "../../lib/plans.js";
 import { requireMember, type Role } from "../../lib/membership.js";
 import { assertActiveSubscription, getProductWorkspaceId } from "../../lib/checkSubscription.js";
 import { listaGrandeDemais } from "../../lib/sanitize.js";
+import { criarIdempotencia, chaveDoHeader } from "../../lib/idempotencia.js";
+
+/* Entradas e saídas já atendidas, pela Idempotency-Key (EQZ-67) */
+const ajusteUmaVez = criarIdempotencia();
 
 /* Cadastrar, editar e excluir produto é de dono e admin (SCRUM-62). Entrada, saída e contagem
    ficam com qualquer membro: as RPCs só exigem ser do workspace */
@@ -209,22 +213,27 @@ const productsRoutes: FastifyPluginAsync = async (fastify) => {
     const token = req.headers.authorization!.slice(7);
     const db    = supabaseForUser(token);
 
-    /* Ajuste atômico via RPC — sem race condition, sem divergência. A versão com p_motivo grava o
-       motivo da saída (EQZ-23); na entrada o banco ignora o motivo */
-    const { data, error } = await db.rpc("adjust_product_qty", {
-      p_product_id: id,
-      p_delta:      parsed.data.delta,
-      p_motivo:     parsed.data.delta < 0 ? parsed.data.motivo ?? "venda" : null,
-      p_reason:     parsed.data.reason ?? null,
-      p_user_id:    req.user.id,
-    });
+    /* Duplo envio (EQZ-67): a mesma Idempotency-Key do mesmo usuário recebe a resposta da primeira
+       vez, sem gravar a entrada ou a saída de novo */
+    const chave = chaveDoHeader(req.headers["idempotency-key"]);
+    const { status, corpo } = await ajusteUmaVez(chave && `${req.user.id}:${id}:${chave}`, async () => {
+      /* Ajuste atômico via RPC — sem race condition, sem divergência. A versão com p_motivo grava o
+         motivo da saída (EQZ-23); na entrada o banco ignora o motivo */
+      const { data, error } = await db.rpc("adjust_product_qty", {
+        p_product_id: id,
+        p_delta:      parsed.data.delta,
+        p_motivo:     parsed.data.delta < 0 ? parsed.data.motivo ?? "venda" : null,
+        p_reason:     parsed.data.reason ?? null,
+        p_user_id:    req.user.id,
+      });
 
-    if (error) {
-      const isNotFound = error.message.includes("não encontrado") || error.message.includes("insuficiente");
-      const status = error.message.includes("Acesso negado") ? 403 : isNotFound ? 400 : 500;
-      return reply.status(status).send(fail(dbError(error)));
-    }
-    return reply.send(ok(data));
+      if (error) {
+        const isNotFound = error.message.includes("não encontrado") || error.message.includes("insuficiente");
+        return { status: error.message.includes("Acesso negado") ? 403 : isNotFound ? 400 : 500, corpo: fail(dbError(error)) };
+      }
+      return { status: 200, corpo: ok(data) };
+    });
+    return reply.status(status).send(corpo);
   });
 
   /* POST /products/:id/count — contagem do dia (EQZ-17, Growth e Pro). A RPC register_stock_count

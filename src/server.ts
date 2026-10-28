@@ -96,19 +96,22 @@ fastify.setErrorHandler<FastifyError>((err, req, reply) => {
   reply.status(status).send({ data: null, error: message });
 });
 
-/* ── Documentação automática (disponível em /docs) ── */
-await fastify.register(swagger, {
-  openapi: {
-    info:       { title: "Estoquizen API", version: "1.0.0", description: "API do sistema de gestão de estoque" },
-    components: { securitySchemes: { bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT" } } },
-    security:   [{ bearerAuth: [] }],
-  },
-});
+/* ── Documentação automática (/docs), só fora de produção (EQZ-67): em produção ela era pública e
+   entregava o mapa das rotas para quem quisesse ── */
+if (IS_DEV) {
+  await fastify.register(swagger, {
+    openapi: {
+      info:       { title: "Estoquizen API", version: "1.0.0", description: "API do sistema de gestão de estoque" },
+      components: { securitySchemes: { bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT" } } },
+      security:   [{ bearerAuth: [] }],
+    },
+  });
 
-await fastify.register(swaggerUi, {
-  routePrefix: "/docs",
-  uiConfig:    { docExpansion: "list", deepLinking: true },
-});
+  await fastify.register(swaggerUi, {
+    routePrefix: "/docs",
+    uiConfig:    { docExpansion: "list", deepLinking: true },
+  });
+}
 
 /* ── Auth plugin ── */
 await fastify.register(authPlugin);
@@ -172,7 +175,7 @@ try {
     runDiagnosticoNfce();
   }
   console.log(`\n🚀 Estoquizen API rodando em http://localhost:${PORT}`);
-  console.log(`📄 Documentação:          http://localhost:${PORT}/docs\n`);
+  if (IS_DEV) console.log(`📄 Documentação:          http://localhost:${PORT}/docs\n`);
 } catch (err) {
   fastify.log.error(err);
   process.exit(1);

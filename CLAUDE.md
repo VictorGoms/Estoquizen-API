@@ -10,7 +10,7 @@ SaaS de gestão de estoque multi-tenant. O backend é uma API REST que serve o f
 - Validação: Zod (sempre antes de tocar o banco)
 - Auth: Supabase Auth (JWT verificado via `supabaseAdmin.auth.getUser`)
 - E-mail: convites, confirmação e senha saem pelo Supabase Auth com SMTP do Resend (remetente `noreply@estoquizen.com.br`, domínio verificado); avisos do trial saem pela API do Resend (`src/lib/resend.ts`)
-- Docs: Swagger UI em `/docs` (via `@fastify/swagger` + `@fastify/swagger-ui`)
+- Docs: Swagger UI em `/docs` (via `@fastify/swagger` + `@fastify/swagger-ui`), **só fora de produção** (EQZ-67)
 
 ## Portas
 - API: `http://localhost:3001`
@@ -77,6 +77,7 @@ database/
 - Erros não tratados e rota inexistente já saem como `{ data: null, error }` em português (setErrorHandler/setNotFoundHandler no server.ts)
 - **O banco aplica as regras também para quem chama o Supabase direto (SCRUM-48).** O cliente (`authenticated`) não grava `qty`, `movements`, `nota_imports`, `workspaces.plan` nem insere membros; só as colunas liberadas por GRANT (produto: dados cadastrais; workspace: nome/descrição; perfil: nome/telefone/foto; membro: papel/status). Toda escrita exige `workspace_is_writable()` (mesma regra do `assertActiveSubscription`). Coluna nova que o cliente precise gravar = GRANT novo numa migração
 - **GRANTs mínimos (EQZ-54 e 59, 2026-10-24):** o cliente lê `profiles` só pelas colunas sem `cpf`, e só de colegas **ativos** (convite pendente não revela o perfil); `anon` não lê tabela nenhuma; tabela que só a API usa (sem policy) fica sem GRANT para `anon`/`authenticated`. Tabela nova: o Supabase dá GRANT de tudo por padrão, então revogue na migração o que o cliente não usa
+- **Fotos (Storage):** os buckets `product-images` e `profile-images` aceitam só `image/jpeg`, `image/png` e `image/webp` de até 5 MB (EQZ-64; configurado no painel, registrado na migração `20261028120000`). O front mostra a recusa pelo `dbErrorPt`
 - **Texto que vai para e-mail:** `sanitizeText` tira tag e também `<`/`>` soltos, e o banco recusa `<`/`>` no nome e na descrição do workspace (CHECK `workspaces_nome_sem_tag`): o nome vai para o convite do Supabase, que chega a outra pessoa. Nos e-mails da API, `escapeHtml` em todo texto do usuário (o `layoutEmail` já escapa o `preheader`)
 - **Lista no corpo:** confira o tamanho com `listaGrandeDemais` antes do zod (EQZ-59). O zod 3 valida item por item mesmo passando do `.max()`: 1 milhão de itens vazios em 3 MB viravam +600 MB de memória
 
@@ -96,7 +97,7 @@ database/
 - `PATCH /products/:id` — atualiza produto, owner/admin (não aceita `qty`: estoque só muda por `/adjust`, que grava a movimentação)
 - `DELETE /products/:id` — remove produto (owner/admin: a rota responde 403 e a RLS também exige)
 - Papéis (SCRUM-62, 2026-10-20): cadastrar, editar e excluir produto é de owner/admin, na rota (`requireMember`) e nas policies `Admin/Owner cria/atualiza/deleta produtos`. Entrada, saída e contagem são de qualquer membro ativo (as RPCs só exigem ser do workspace)
-- `POST /products/:id/adjust` — entrada/saída de estoque (qualquer membro) via RPC `adjust_product_qty` (atômico). `{ delta, reason?, motivo? }`: na saída, `motivo` é venda/perda/vencido/furto/uso_interno/devolucao (padrão venda); na entrada é ignorado
+- `POST /products/:id/adjust` — entrada/saída de estoque (qualquer membro) via RPC `adjust_product_qty` (atômico). Aceita o header `Idempotency-Key` (EQZ-67, `src/lib/idempotencia.ts`): a mesma chave do mesmo usuário em até 2 min recebe a resposta da primeira vez sem gravar de novo (dois toques no botão); erro não fica guardado. Em memória, porque a API roda numa instância só. `{ delta, reason?, motivo? }`: na saída, `motivo` é venda/perda/vencido/furto/uso_interno/devolucao (padrão venda); na entrada é ignorado
 - `POST /products/:id/count` — contagem do dia `{ counted }` (EQZ-17, Growth e Pro, qualquer membro) via RPC `register_stock_count`: registra em `stock_counts` e, se não bater, corrige o estoque com "Ajuste de contagem"
 - `GET  /products/:id/movements?since=<iso>&limit=<n>` — histórico de movimentações
 - `POST /products/import` — importação de planilha (EQZ-14) `{ workspace_id, itens[] }` (até 2000; o front lê o CSV/Excel e manda as colunas já mapeadas). Owner/admin, assinatura ativa, limite do plano. RPC `import_products` grava tudo numa transação; código que já existe no workspace é pulado (`{ criados, ignorados }`) e quantidade > 0 vira "Estoque inicial (planilha)"
@@ -372,7 +373,7 @@ Price metadata: { plan: "growth", interval: "monthly" }
 
 ### Rotas de billing (`src/routes/v1/billing.ts`)
 ```
-GET  /billing/subscription      — estado da assinatura (qualquer membro)
+GET  /billing/subscription      — estado da assinatura (qualquer membro): só os campos que as telas usam, e `stripe_customer_id`/`stripe_subscription_id` só para o dono (EQZ-66)
 POST /billing/checkout          — cria Stripe Checkout Session (só owner); { embutido: true } → pagamento dentro do app (ui_mode embedded_page, redirect só se o meio de pagamento exigir) e devolve client_secret; sem, devolve a url da página do Stripe
 POST /billing/portal            — Customer Portal do Stripe (só owner): cartão e faturas, com a configuração `STRIPE_PORTAL_CONFIG_GERAL` (sem troca de plano, EQZ-57: descer por ali pulava a checagem de uso). Troca de plano é pelo /billing/checkout
 POST /billing/cancel            — cancela no fim do ciclo, direto no app (só owner); desfaz uma pausa agendada
